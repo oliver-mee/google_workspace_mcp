@@ -2,6 +2,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from core.server import server
 from core.utils import UserInputError
 from gslides.slides_tools import (
     _describe_elements,
@@ -11,6 +12,53 @@ from gslides.slides_tools import (
     batch_update_presentation,
     get_presentation,
 )
+
+EXPECTED_SLIDES_BATCH_REQUEST_TYPES = {
+    "createSlide",
+    "createShape",
+    "createTable",
+    "insertText",
+    "insertTableRows",
+    "insertTableColumns",
+    "deleteTableRow",
+    "deleteTableColumn",
+    "replaceAllText",
+    "deleteObject",
+    "updatePageElementTransform",
+    "updateSlidesPosition",
+    "deleteText",
+    "createImage",
+    "createVideo",
+    "createSheetsChart",
+    "createLine",
+    "refreshSheetsChart",
+    "updateShapeProperties",
+    "updateImageProperties",
+    "updateVideoProperties",
+    "updatePageProperties",
+    "updateTableCellProperties",
+    "updateLineProperties",
+    "createParagraphBullets",
+    "replaceAllShapesWithImage",
+    "duplicateObject",
+    "updateTextStyle",
+    "replaceAllShapesWithSheetsChart",
+    "deleteParagraphBullets",
+    "updateParagraphStyle",
+    "updateTableBorderProperties",
+    "updateTableColumnProperties",
+    "updateTableRowProperties",
+    "mergeTableCells",
+    "unmergeTableCells",
+    "groupObjects",
+    "ungroupObjects",
+    "updatePageElementAltText",
+    "replaceImage",
+    "updateSlideProperties",
+    "updatePageElementsZOrder",
+    "updateLineCategory",
+    "rerouteLine",
+}
 
 
 def _unwrap(tool):
@@ -31,6 +79,57 @@ def _build_slides_service(presentation=None, batch_update_response=None):
         batch_update_response or {"replies": []}
     )
     return service, presentations
+
+
+@pytest.mark.asyncio
+async def test_batch_update_schema_exposes_slides_request_variants():
+    tools = await server.list_tools(run_middleware=False)
+    tool = next(tool for tool in tools if tool.name == "batch_update_presentation")
+
+    requests_schema = tool.parameters["properties"]["requests"]
+    request_variants = requests_schema["items"]["anyOf"]
+    request_types = {next(iter(variant["properties"])) for variant in request_variants}
+
+    assert requests_schema["minItems"] == 1
+    assert len(request_variants) == 44
+    assert request_types == EXPECTED_SLIDES_BATCH_REQUEST_TYPES
+
+    for variant in request_variants:
+        assert variant["additionalProperties"] is False
+        assert len(variant["properties"]) == 1
+        request_type = next(iter(variant["properties"]))
+        assert variant["required"] == [request_type]
+        request_payload = variant["properties"][request_type]
+        assert request_payload["additionalProperties"] is False
+        assert request_payload["properties"]
+
+    create_shape = next(
+        variant["properties"]["createShape"]
+        for variant in request_variants
+        if "createShape" in variant["properties"]
+    )
+    assert create_shape["additionalProperties"] is False
+    assert {
+        "objectId",
+        "shapeType",
+        "elementProperties",
+    }.issubset(create_shape["properties"])
+
+    create_line = next(
+        variant["properties"]["createLine"]
+        for variant in request_variants
+        if "createLine" in variant["properties"]
+    )
+    assert {"category", "lineCategory"}.issubset(create_line["properties"])
+
+    replace_shapes_with_image = next(
+        variant["properties"]["replaceAllShapesWithImage"]
+        for variant in request_variants
+        if "replaceAllShapesWithImage" in variant["properties"]
+    )
+    assert {"imageReplaceMethod", "replaceMethod"}.issubset(
+        replace_shapes_with_image["properties"]
+    )
 
 
 @pytest.mark.asyncio
@@ -198,6 +297,34 @@ async def test_batch_update_allows_insert_text_targeting_created_shape():
     assert call_kwargs["body"] == {"requests": requests}
     assert "Batch Update Completed" in result
     assert "Created shape with ID title_box" in result
+
+
+@pytest.mark.asyncio
+async def test_batch_update_strips_schema_nulls_before_google_api_call():
+    service, presentations = _build_slides_service(
+        batch_update_response={"replies": [{"createSlide": {"objectId": "slide_2"}}]}
+    )
+    requests = [
+        {
+            "createSlide": {
+                "objectId": "slide_2",
+                "insertionIndex": None,
+                "slideLayoutReference": None,
+            }
+        }
+    ]
+
+    await _unwrap(batch_update_presentation)(
+        service=service,
+        user_google_email="user@example.com",
+        presentation_id="presentation-1",
+        requests=requests,
+    )
+
+    call_kwargs = presentations.batchUpdate.call_args.kwargs
+    assert call_kwargs["body"] == {
+        "requests": [{"createSlide": {"objectId": "slide_2"}}]
+    }
 
 
 @pytest.mark.asyncio
