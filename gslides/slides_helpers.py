@@ -164,7 +164,10 @@ _AFFINE_TRANSFORM_SCHEMA = _strict_object(
 
 _ELEMENT_PROPERTIES_SCHEMA = _strict_object(
     {
-        "pageObjectId": {"type": "string", "description": "Target slide/page object ID."},
+        "pageObjectId": {
+            "type": "string",
+            "description": "Target slide/page object ID.",
+        },
         "size": _nullable(deepcopy(_SIZE_SCHEMA)),
         "transform": _nullable(deepcopy(_AFFINE_TRANSFORM_SCHEMA)),
     }
@@ -192,13 +195,29 @@ _RGB_COLOR_SCHEMA = _strict_object(
 _OPAQUE_COLOR_SCHEMA = _strict_object(
     {
         "rgbColor": _nullable(deepcopy(_RGB_COLOR_SCHEMA)),
+        "themeColor": _nullable_string("Theme color name."),
     }
 )
 
 _OPTIONAL_COLOR_SCHEMA = _strict_object(
     {
         "opaqueColor": _nullable(deepcopy(_OPAQUE_COLOR_SCHEMA)),
+    }
+)
+
+_SOLID_FILL_SCHEMA = _strict_object(
+    {
+        "color": _nullable(deepcopy(_OPAQUE_COLOR_SCHEMA)),
         "alpha": _nullable_number("Alpha value from 0 to 1."),
+    }
+)
+
+_LINK_SCHEMA = _strict_object(
+    {
+        "url": _nullable_string("External URL."),
+        "relativeLink": _nullable_string("Relative slide link type."),
+        "pageObjectId": _nullable_string("Linked page object ID."),
+        "slideIndex": _nullable_integer("Linked slide index."),
     }
 )
 
@@ -211,8 +230,14 @@ _WEIGHTED_FONT_FAMILY_SCHEMA = _strict_object(
 
 _TEXT_STYLE_SCHEMA = _strict_object(
     {
+        "backgroundColor": _nullable(deepcopy(_OPTIONAL_COLOR_SCHEMA)),
+        "baselineOffset": _nullable_string("Text baseline offset."),
         "bold": _nullable_boolean("Whether text is bold."),
+        "fontFamily": _nullable_string("Font family name."),
         "italic": _nullable_boolean("Whether text is italic."),
+        "link": _nullable(deepcopy(_LINK_SCHEMA)),
+        "smallCaps": _nullable_boolean("Whether text uses small caps."),
+        "strikethrough": _nullable_boolean("Whether text is struck through."),
         "underline": _nullable_boolean("Whether text is underlined."),
         "fontSize": _nullable(deepcopy(_DIMENSION_SCHEMA)),
         "foregroundColor": _nullable(deepcopy(_OPTIONAL_COLOR_SCHEMA)),
@@ -222,7 +247,7 @@ _TEXT_STYLE_SCHEMA = _strict_object(
 
 _LINE_FILL_SCHEMA = _strict_object(
     {
-        "solidFill": _nullable(deepcopy(_OPTIONAL_COLOR_SCHEMA)),
+        "solidFill": _nullable(deepcopy(_SOLID_FILL_SCHEMA)),
     }
 )
 
@@ -241,19 +266,22 @@ _SHADOW_SCHEMA = _strict_object(
         "transform": _nullable(deepcopy(_AFFINE_TRANSFORM_SCHEMA)),
         "alignment": _nullable_string("Shadow alignment."),
         "blurRadius": _nullable(deepcopy(_DIMENSION_SCHEMA)),
-        "color": _nullable(deepcopy(_OPTIONAL_COLOR_SCHEMA)),
+        "color": _nullable(deepcopy(_OPAQUE_COLOR_SCHEMA)),
         "alpha": _nullable_number("Shadow alpha value from 0 to 1."),
-        "rotateWithShape": _nullable_boolean("Whether the shadow rotates with the shape."),
+        "rotateWithShape": _nullable_boolean(
+            "Whether the shadow rotates with the shape."
+        ),
         "propertyState": _nullable_string("Shadow property state."),
     }
 )
 
-_LINK_SCHEMA = _strict_object(
+_AUTOFIT_SCHEMA = _strict_object(
     {
-        "url": _nullable_string("External URL."),
-        "relativeLink": _nullable_string("Relative slide link type."),
-        "pageObjectId": _nullable_string("Linked page object ID."),
-        "slideIndex": _nullable_integer("Linked slide index."),
+        "autofitType": _nullable_string("Autofit type."),
+        "fontScale": _nullable_number("Font scale applied by autofit."),
+        "lineSpacingReduction": _nullable_number(
+            "Line spacing reduction applied by autofit."
+        ),
     }
 )
 
@@ -281,6 +309,28 @@ _IMAGE_PROPERTIES_SCHEMA = _strict_object(
         "brightness": _nullable_number("Image brightness value."),
         "contrast": _nullable_number("Image contrast value."),
         "outline": _nullable(deepcopy(_OUTLINE_SCHEMA)),
+        "recolor": _nullable(
+            _strict_object(
+                {
+                    "name": _nullable_string("Recolor effect name."),
+                    "recolorStops": _nullable(
+                        _array_items(
+                            _strict_object(
+                                {
+                                    "alpha": _nullable_number(
+                                        "Recolor stop alpha value."
+                                    ),
+                                    "color": _nullable(deepcopy(_OPAQUE_COLOR_SCHEMA)),
+                                    "position": _nullable_number(
+                                        "Recolor stop position."
+                                    ),
+                                }
+                            )
+                        )
+                    ),
+                }
+            )
+        ),
         "shadow": _nullable(deepcopy(_SHADOW_SCHEMA)),
         "link": _nullable(deepcopy(_LINK_SCHEMA)),
     }
@@ -288,9 +338,11 @@ _IMAGE_PROPERTIES_SCHEMA = _strict_object(
 
 _VIDEO_PROPERTIES_SCHEMA = _strict_object(
     {
+        "autoPlay": _nullable_boolean("Whether the video plays automatically."),
+        "end": _nullable_integer("Video end time in seconds."),
+        "mute": _nullable_boolean("Whether the video is muted."),
         "outline": _nullable(deepcopy(_OUTLINE_SCHEMA)),
-        "shadow": _nullable(deepcopy(_SHADOW_SCHEMA)),
-        "link": _nullable(deepcopy(_LINK_SCHEMA)),
+        "start": _nullable_integer("Video start time in seconds."),
     }
 )
 
@@ -309,11 +361,15 @@ _LINE_PROPERTIES_SCHEMA = _strict_object(
 
 _SHAPE_PROPERTIES_SCHEMA = _strict_object(
     {
+        "autofit": _nullable(deepcopy(_AUTOFIT_SCHEMA)),
         "contentAlignment": _nullable_string("Content alignment, for example MIDDLE."),
         "shapeBackgroundFill": _nullable(
             _strict_object(
                 {
-                    "solidFill": _nullable(deepcopy(_OPTIONAL_COLOR_SCHEMA)),
+                    "propertyState": _nullable_string(
+                        "Shape background property state."
+                    ),
+                    "solidFill": _nullable(deepcopy(_SOLID_FILL_SCHEMA)),
                 }
             )
         ),
@@ -325,10 +381,37 @@ _SHAPE_PROPERTIES_SCHEMA = _strict_object(
 
 _PAGE_PROPERTIES_SCHEMA = _strict_object(
     {
+        "colorScheme": _nullable(
+            _strict_object(
+                {
+                    "colors": _nullable(
+                        _array_items(
+                            _strict_object(
+                                {
+                                    "color": _nullable(deepcopy(_RGB_COLOR_SCHEMA)),
+                                    "type": _nullable_string("Theme color type."),
+                                }
+                            )
+                        )
+                    ),
+                }
+            )
+        ),
         "pageBackgroundFill": _nullable(
             _strict_object(
                 {
-                    "solidFill": _nullable(deepcopy(_OPTIONAL_COLOR_SCHEMA)),
+                    "propertyState": _nullable_string(
+                        "Page background property state."
+                    ),
+                    "solidFill": _nullable(deepcopy(_SOLID_FILL_SCHEMA)),
+                    "stretchedPictureFill": _nullable(
+                        _strict_object(
+                            {
+                                "contentUrl": _nullable_string("Picture content URL."),
+                                "size": _nullable(deepcopy(_SIZE_SCHEMA)),
+                            }
+                        )
+                    ),
                 }
             )
         ),
@@ -409,7 +492,9 @@ _PLACEHOLDER_SCHEMA = _strict_object(
 
 _LAYOUT_PLACEHOLDER_ID_MAPPING_SCHEMA = _strict_object(
     {
-        "objectId": _nullable_string("Object ID for the placeholder created on the slide."),
+        "objectId": _nullable_string(
+            "Object ID for the placeholder created on the slide."
+        ),
         "layoutPlaceholder": _nullable(deepcopy(_PLACEHOLDER_SCHEMA)),
         "layoutPlaceholderObjectId": _nullable_string(
             "Object ID of the placeholder on the layout."
@@ -419,7 +504,11 @@ _LAYOUT_PLACEHOLDER_ID_MAPPING_SCHEMA = _strict_object(
 
 _SLIDE_PROPERTIES_SCHEMA = _strict_object(
     {
-        "isSkipped": _nullable_boolean("Whether the slide is skipped in presentation mode."),
+        "isSkipped": _nullable_boolean(
+            "Whether the slide is skipped in presentation mode."
+        ),
+        "layoutObjectId": _nullable_string("Layout object ID."),
+        "masterObjectId": _nullable_string("Master object ID."),
     }
 )
 
@@ -469,7 +558,10 @@ _SLIDES_BATCH_REQUEST_PAYLOAD_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "columns": {"type": "integer", "description": "Number of table columns."},
     },
     "insertText": {
-        "objectId": {"type": "string", "description": "Text-capable shape or table object ID."},
+        "objectId": {
+            "type": "string",
+            "description": "Text-capable shape or table object ID.",
+        },
         "insertionIndex": {"type": "integer", "description": "Text insertion index."},
         "text": {"type": "string", "description": "Text to insert."},
         "cellLocation": _nullable(deepcopy(_CELL_LOCATION_SCHEMA)),
@@ -497,7 +589,9 @@ _SLIDES_BATCH_REQUEST_PAYLOAD_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "replaceAllText": {
         "containsText": deepcopy(_CONTAINS_TEXT_SCHEMA),
         "replaceText": {"type": "string", "description": "Replacement text."},
-        "pageObjectIds": _nullable(_string_array("Slide/page object IDs to limit replacement.")),
+        "pageObjectIds": _nullable(
+            _string_array("Slide/page object IDs to limit replacement.")
+        ),
     },
     "deleteObject": {
         "objectId": {"type": "string", "description": "Object ID to delete."},
@@ -523,13 +617,19 @@ _SLIDES_BATCH_REQUEST_PAYLOAD_SCHEMAS: Dict[str, Dict[str, Any]] = {
     },
     "createVideo": {
         "objectId": _nullable_string("Optional video object ID."),
-        "source": {"type": "string", "description": "Video source, for example YOUTUBE."},
+        "source": {
+            "type": "string",
+            "description": "Video source, for example YOUTUBE.",
+        },
         "id": {"type": "string", "description": "Video source ID."},
         "elementProperties": deepcopy(_ELEMENT_PROPERTIES_SCHEMA),
     },
     "createSheetsChart": {
         "objectId": _nullable_string("Optional chart object ID."),
-        "spreadsheetId": {"type": "string", "description": "Google Sheets spreadsheet ID."},
+        "spreadsheetId": {
+            "type": "string",
+            "description": "Google Sheets spreadsheet ID.",
+        },
         "chartId": {"type": "integer", "description": "Sheets chart ID."},
         "linkingMode": _nullable_string("Chart linking mode."),
         "elementProperties": deepcopy(_ELEMENT_PROPERTIES_SCHEMA),
@@ -546,33 +646,51 @@ _SLIDES_BATCH_REQUEST_PAYLOAD_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "updateShapeProperties": {
         "objectId": {"type": "string", "description": "Shape object ID."},
         "shapeProperties": deepcopy(_SHAPE_PROPERTIES_SCHEMA),
-        "fields": {"type": "string", "description": "Comma-separated shape property fields."},
+        "fields": {
+            "type": "string",
+            "description": "Comma-separated shape property fields.",
+        },
     },
     "updateImageProperties": {
         "objectId": {"type": "string", "description": "Image object ID."},
         "imageProperties": deepcopy(_IMAGE_PROPERTIES_SCHEMA),
-        "fields": {"type": "string", "description": "Comma-separated image property fields."},
+        "fields": {
+            "type": "string",
+            "description": "Comma-separated image property fields.",
+        },
     },
     "updateVideoProperties": {
         "objectId": {"type": "string", "description": "Video object ID."},
         "videoProperties": deepcopy(_VIDEO_PROPERTIES_SCHEMA),
-        "fields": {"type": "string", "description": "Comma-separated video property fields."},
+        "fields": {
+            "type": "string",
+            "description": "Comma-separated video property fields.",
+        },
     },
     "updatePageProperties": {
         "objectId": {"type": "string", "description": "Slide/page ID."},
         "pageProperties": deepcopy(_PAGE_PROPERTIES_SCHEMA),
-        "fields": {"type": "string", "description": "Comma-separated page property fields."},
+        "fields": {
+            "type": "string",
+            "description": "Comma-separated page property fields.",
+        },
     },
     "updateTableCellProperties": {
         "objectId": {"type": "string", "description": "Table object ID."},
         "tableRange": _nullable(deepcopy(_TABLE_RANGE_SCHEMA)),
         "tableCellProperties": deepcopy(_TABLE_CELL_PROPERTIES_SCHEMA),
-        "fields": {"type": "string", "description": "Comma-separated table cell property fields."},
+        "fields": {
+            "type": "string",
+            "description": "Comma-separated table cell property fields.",
+        },
     },
     "updateLineProperties": {
         "objectId": {"type": "string", "description": "Line object ID."},
         "lineProperties": deepcopy(_LINE_PROPERTIES_SCHEMA),
-        "fields": {"type": "string", "description": "Comma-separated line property fields."},
+        "fields": {
+            "type": "string",
+            "description": "Comma-separated line property fields.",
+        },
     },
     "createParagraphBullets": {
         "objectId": {"type": "string", "description": "Shape or table object ID."},
@@ -585,7 +703,9 @@ _SLIDES_BATCH_REQUEST_PAYLOAD_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "imageUrl": {"type": "string", "description": "Replacement image URL."},
         "imageReplaceMethod": _nullable_string("Image replace method."),
         "replaceMethod": _nullable_string("Image replace method."),
-        "pageObjectIds": _nullable(_string_array("Slide/page object IDs to limit replacement.")),
+        "pageObjectIds": _nullable(
+            _string_array("Slide/page object IDs to limit replacement.")
+        ),
     },
     # DuplicateObjectRequest.objectIds is an arbitrary string-to-string map.
     # Keeping this schema strict and closed is more important than exposing that
@@ -598,15 +718,23 @@ _SLIDES_BATCH_REQUEST_PAYLOAD_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "objectId": {"type": "string", "description": "Shape or table object ID."},
         "textRange": deepcopy(_TEXT_RANGE_SCHEMA),
         "style": deepcopy(_TEXT_STYLE_SCHEMA),
-        "fields": {"type": "string", "description": "Comma-separated text style fields."},
+        "fields": {
+            "type": "string",
+            "description": "Comma-separated text style fields.",
+        },
         "cellLocation": _nullable(deepcopy(_CELL_LOCATION_SCHEMA)),
     },
     "replaceAllShapesWithSheetsChart": {
         "containsText": deepcopy(_CONTAINS_TEXT_SCHEMA),
-        "spreadsheetId": {"type": "string", "description": "Google Sheets spreadsheet ID."},
+        "spreadsheetId": {
+            "type": "string",
+            "description": "Google Sheets spreadsheet ID.",
+        },
         "chartId": {"type": "integer", "description": "Sheets chart ID."},
         "linkingMode": _nullable_string("Chart linking mode."),
-        "pageObjectIds": _nullable(_string_array("Slide/page object IDs to limit replacement.")),
+        "pageObjectIds": _nullable(
+            _string_array("Slide/page object IDs to limit replacement.")
+        ),
     },
     "deleteParagraphBullets": {
         "objectId": {"type": "string", "description": "Shape or table object ID."},
@@ -617,7 +745,10 @@ _SLIDES_BATCH_REQUEST_PAYLOAD_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "objectId": {"type": "string", "description": "Shape or table object ID."},
         "style": deepcopy(_PARAGRAPH_STYLE_SCHEMA),
         "textRange": deepcopy(_TEXT_RANGE_SCHEMA),
-        "fields": {"type": "string", "description": "Comma-separated paragraph style fields."},
+        "fields": {
+            "type": "string",
+            "description": "Comma-separated paragraph style fields.",
+        },
         "cellLocation": _nullable(deepcopy(_CELL_LOCATION_SCHEMA)),
     },
     "updateTableBorderProperties": {
@@ -625,19 +756,28 @@ _SLIDES_BATCH_REQUEST_PAYLOAD_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "tableRange": _nullable(deepcopy(_TABLE_RANGE_SCHEMA)),
         "borderPosition": _nullable_string("Table border position."),
         "tableBorderProperties": deepcopy(_TABLE_BORDER_PROPERTIES_SCHEMA),
-        "fields": {"type": "string", "description": "Comma-separated table border fields."},
+        "fields": {
+            "type": "string",
+            "description": "Comma-separated table border fields.",
+        },
     },
     "updateTableColumnProperties": {
         "objectId": {"type": "string", "description": "Table object ID."},
         "columnIndices": _nullable(_integer_array("Zero-based column indices.")),
         "tableColumnProperties": deepcopy(_TABLE_COLUMN_PROPERTIES_SCHEMA),
-        "fields": {"type": "string", "description": "Comma-separated table column fields."},
+        "fields": {
+            "type": "string",
+            "description": "Comma-separated table column fields.",
+        },
     },
     "updateTableRowProperties": {
         "objectId": {"type": "string", "description": "Table object ID."},
         "rowIndices": _nullable(_integer_array("Zero-based row indices.")),
         "tableRowProperties": deepcopy(_TABLE_ROW_PROPERTIES_SCHEMA),
-        "fields": {"type": "string", "description": "Comma-separated table row fields."},
+        "fields": {
+            "type": "string",
+            "description": "Comma-separated table row fields.",
+        },
     },
     "mergeTableCells": {
         "objectId": {"type": "string", "description": "Table object ID."},
@@ -667,7 +807,10 @@ _SLIDES_BATCH_REQUEST_PAYLOAD_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "updateSlideProperties": {
         "objectId": {"type": "string", "description": "Slide object ID."},
         "slideProperties": deepcopy(_SLIDE_PROPERTIES_SCHEMA),
-        "fields": {"type": "string", "description": "Comma-separated slide property fields."},
+        "fields": {
+            "type": "string",
+            "description": "Comma-separated slide property fields.",
+        },
     },
     "updatePageElementsZOrder": {
         "pageElementObjectIds": _string_array("Page element object IDs."),
@@ -698,17 +841,21 @@ def _slides_batch_request_guidance() -> str:
     return f"exactly one Slides request type such as {examples}"
 
 
-def strip_null_values(value: Any) -> Any:
+def strip_null_values(value: Any, *, _depth: int = 0) -> Any:
     """Remove nulls emitted for strict-schema optional fields before Google API calls."""
     if isinstance(value, dict):
-        return {
-            key: strip_null_values(item)
-            for key, item in value.items()
-            if item is not None
-        }
+        cleaned = {}
+        for key, item in value.items():
+            if item is None:
+                continue
+            cleaned_item = strip_null_values(item, _depth=_depth + 1)
+            if _depth >= 2 and cleaned_item == {}:
+                continue
+            cleaned[key] = cleaned_item
+        return cleaned
 
     if isinstance(value, list):
-        return [strip_null_values(item) for item in value]
+        return [strip_null_values(item, _depth=_depth + 1) for item in value]
 
     return value
 

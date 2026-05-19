@@ -131,6 +131,41 @@ async def test_batch_update_schema_exposes_slides_request_variants():
         replace_shapes_with_image["properties"]
     )
 
+    update_text_style = next(
+        variant["properties"]["updateTextStyle"]
+        for variant in request_variants
+        if "updateTextStyle" in variant["properties"]
+    )
+    assert {
+        "backgroundColor",
+        "baselineOffset",
+        "fontFamily",
+        "link",
+        "smallCaps",
+        "strikethrough",
+    }.issubset(update_text_style["properties"]["style"]["properties"])
+
+    update_shape_properties = next(
+        variant["properties"]["updateShapeProperties"]
+        for variant in request_variants
+        if "updateShapeProperties" in variant["properties"]
+    )
+    solid_fill = update_shape_properties["properties"]["shapeProperties"]["properties"][
+        "shapeBackgroundFill"
+    ]["anyOf"][0]["properties"]["solidFill"]["anyOf"][0]
+    assert "color" in solid_fill["properties"]
+    assert "opaqueColor" not in solid_fill["properties"]
+
+    update_video_properties = next(
+        variant["properties"]["updateVideoProperties"]
+        for variant in request_variants
+        if "updateVideoProperties" in variant["properties"]
+    )
+    video_properties = update_video_properties["properties"]["videoProperties"][
+        "properties"
+    ]
+    assert {"autoPlay", "end", "mute", "outline", "start"} == set(video_properties)
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -324,6 +359,68 @@ async def test_batch_update_strips_schema_nulls_before_google_api_call():
     call_kwargs = presentations.batchUpdate.call_args.kwargs
     assert call_kwargs["body"] == {
         "requests": [{"createSlide": {"objectId": "slide_2"}}]
+    }
+
+
+@pytest.mark.asyncio
+async def test_batch_update_prunes_nested_empty_schema_objects():
+    service, presentations = _build_slides_service()
+    requests = [
+        {
+            "updateTextStyle": {
+                "objectId": "title_box",
+                "textRange": {
+                    "type": "ALL",
+                    "startIndex": None,
+                    "endIndex": None,
+                },
+                "style": {
+                    "backgroundColor": {"opaqueColor": None},
+                    "baselineOffset": None,
+                    "bold": True,
+                    "fontFamily": None,
+                    "fontSize": None,
+                    "foregroundColor": {"opaqueColor": None},
+                    "italic": None,
+                    "link": {
+                        "url": None,
+                        "relativeLink": None,
+                        "pageObjectId": None,
+                        "slideIndex": None,
+                    },
+                    "smallCaps": None,
+                    "strikethrough": None,
+                    "underline": None,
+                    "weightedFontFamily": {
+                        "fontFamily": None,
+                        "weight": None,
+                    },
+                },
+                "fields": "bold",
+                "cellLocation": None,
+            }
+        }
+    ]
+
+    await _unwrap(batch_update_presentation)(
+        service=service,
+        user_google_email="user@example.com",
+        presentation_id="presentation-1",
+        requests=requests,
+    )
+
+    call_kwargs = presentations.batchUpdate.call_args.kwargs
+    assert call_kwargs["body"] == {
+        "requests": [
+            {
+                "updateTextStyle": {
+                    "objectId": "title_box",
+                    "textRange": {"type": "ALL"},
+                    "style": {"bold": True},
+                    "fields": "bold",
+                }
+            }
+        ]
     }
 
 
