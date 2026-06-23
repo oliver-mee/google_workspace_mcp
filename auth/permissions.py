@@ -70,7 +70,10 @@ SERVICE_PERMISSION_LEVELS: Dict[str, List[Tuple[str, List[str]]]] = {
     ],
     "drive": [
         ("readonly", [DRIVE_READONLY_SCOPE]),
-        ("full", [DRIVE_SCOPE, DRIVE_FILE_SCOPE]),
+        # Local change (2026-06-09): drop broad DRIVE_SCOPE (see/edit/delete ALL
+        # files). No Drive tool requires it - writes use drive.file, reads use
+        # drive.readonly. Re-apply on upstream update. See vps-docs/google-workspace-mcp.md.
+        ("full", [DRIVE_FILE_SCOPE, DRIVE_READONLY_SCOPE]),
     ],
     "calendar": [
         ("readonly", [CALENDAR_READONLY_SCOPE]),
