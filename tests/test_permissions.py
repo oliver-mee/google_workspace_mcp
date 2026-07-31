@@ -104,10 +104,11 @@ class TestGetScopesForPermission:
         assert DRIVE_SCOPE not in scopes
         assert DRIVE_FILE_SCOPE not in scopes
 
-    def test_drive_full_includes_readonly(self):
+    def test_drive_full_uses_least_privilege_scopes(self):
         scopes = get_scopes_for_permission("drive", "full")
         assert DRIVE_READONLY_SCOPE in scopes
-        assert DRIVE_SCOPE in scopes
+        assert DRIVE_FILE_SCOPE in scopes
+        assert DRIVE_SCOPE not in scopes
 
     def test_unknown_service_raises(self):
         with pytest.raises(ValueError, match="Unknown service"):
