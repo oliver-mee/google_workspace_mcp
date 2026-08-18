@@ -21,14 +21,16 @@ RUN uv sync --frozen --no-dev --extra disk --extra otel
 # Vendor patches to the `mcp` SDK inside site-packages. TEMPORARY — remove each
 # one as its upstream fix lands in modelcontextprotocol/python-sdk.
 #
-# 1. register.py — DCR refuses to issue a client secret when the client asks for
-#    token_endpoint_auth_method "none", but ChatGPT needs one. We issue a secret
-#    and set the method to client_secret_basic so response and expectation agree.
-# 2. client_auth.py + token.py — the SDK reads client_id from the form body and
+# client_auth.py + token.py — the SDK reads client_id from the form body and
 #    raises "Missing client_id" before it ever looks at the Authorization header.
 #    RFC 6749 Sec 2.3.1 allows a client using HTTP Basic to omit client_id from the
 #    body, which is exactly what Codex does. Confirmed still present on
 #    python-sdk main, 2026-08-18.
+#
+# The register.py patch that forced a client secret for DCR clients requesting
+# token_endpoint_auth_method "none" was removed 2026-08-18: fastmcp 3.4.7 issues a
+# secret whenever a client asks for client_secret_basic and honours "none" for public
+# clients, so forcing it only overrode what the client asked for.
 #
 # Every patch asserts its anchor and exits non-zero if it is missing, so an SDK
 # upgrade fails the build loudly. The previous version of this used `sed -i`,
@@ -37,26 +39,6 @@ RUN uv sync --frozen --no-dev --extra disk --extra otel
 # ---------------------------------------------------------------------------
 RUN /app/.venv/bin/python - <<'PY'
 from pathlib import Path
-
-register_path = Path("/app/.venv/lib/python3.11/site-packages/mcp/server/auth/handlers/register.py")
-register_source = register_path.read_text()
-register_old = '''        client_secret = None
-        if client_metadata.token_endpoint_auth_method != "none":  # pragma: no branch
-            # cryptographically secure random 32-byte hex string
-            client_secret = secrets.token_hex(32)
-'''
-register_new = '''        # The compatibility secret must be paired with the auth method we
-        # return, otherwise clients choose Basic while the server expects a
-        # public form request.
-        if client_metadata.token_endpoint_auth_method == "none":
-            client_metadata.token_endpoint_auth_method = "client_secret_basic"
-
-        # cryptographically secure random 32-byte hex string
-        client_secret = secrets.token_hex(32)
-'''
-if register_old not in register_source:
-    raise SystemExit("FastMCP registration patch anchor not found")
-register_path.write_text(register_source.replace(register_old, register_new, 1))
 
 auth_path = Path("/app/.venv/lib/python3.11/site-packages/mcp/server/auth/middleware/client_auth.py")
 auth_source = auth_path.read_text()
