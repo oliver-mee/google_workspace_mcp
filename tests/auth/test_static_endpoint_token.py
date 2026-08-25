@@ -9,6 +9,7 @@ from auth.oauth_config import (
     get_static_endpoint_token,
     is_static_endpoint_token_enabled,
 )
+from auth import service_decorator
 from auth.service_decorator import _extract_oauth20_user_email
 
 
@@ -16,6 +17,9 @@ from auth.service_decorator import _extract_oauth20_user_email
 def _clean_env(monkeypatch):
     monkeypatch.delenv("WORKSPACE_MCP_STATIC_TOKEN", raising=False)
     monkeypatch.delenv("USER_GOOGLE_EMAIL", raising=False)
+    # _ENV_USER_EMAIL snapshots the environment at import time, so clearing the
+    # variable is not enough to exercise the missing-email path.
+    monkeypatch.setattr(service_decorator, "_ENV_USER_EMAIL", None, raising=False)
 
 
 def test_static_endpoint_token_absent_by_default():
@@ -86,3 +90,19 @@ def test_without_a_static_token_the_caller_supplied_email_is_honoured(monkeypatc
 
     kwargs = {"user_google_email": "other@example.com"}
     assert _extract_oauth20_user_email((), kwargs, _sig()) == "other@example.com"
+
+
+def test_whitespace_only_pinned_email_is_rejected(monkeypatch):
+    """A blank USER_GOOGLE_EMAIL cannot identify an account, so it must not pin."""
+    monkeypatch.setenv("WORKSPACE_MCP_STATIC_TOKEN", "shared-secret")
+    monkeypatch.setenv("USER_GOOGLE_EMAIL", "   ")
+
+    with pytest.raises(Exception, match="USER_GOOGLE_EMAIL"):
+        _extract_oauth20_user_email((), {}, _sig())
+
+
+def test_pinned_email_is_stripped(monkeypatch):
+    monkeypatch.setenv("WORKSPACE_MCP_STATIC_TOKEN", "shared-secret")
+    monkeypatch.setenv("USER_GOOGLE_EMAIL", "  owner@example.com  ")
+
+    assert _extract_oauth20_user_email((), {}, _sig()) == "owner@example.com"

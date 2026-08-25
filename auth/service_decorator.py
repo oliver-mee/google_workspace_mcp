@@ -507,7 +507,7 @@ def _extract_oauth20_user_email(
     # would turn one credential into access to every credential in the store, so
     # the configured email wins over anything the caller passes.
     if is_static_endpoint_token_enabled():
-        pinned_email = _get_configured_user_google_email()
+        pinned_email = (_get_configured_user_google_email() or "").strip()
         if not pinned_email:
             raise Exception(
                 "WORKSPACE_MCP_STATIC_TOKEN requires USER_GOOGLE_EMAIL so requests "

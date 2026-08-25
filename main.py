@@ -781,7 +781,8 @@ def main():
             )
             sys.exit(1)
 
-        if not os.getenv("USER_GOOGLE_EMAIL"):
+        pinned_email = os.getenv("USER_GOOGLE_EMAIL", "").strip()
+        if not pinned_email:
             ui.step(
                 "WORKSPACE_MCP_STATIC_TOKEN requires USER_GOOGLE_EMAIL", state="fail"
             )
@@ -791,7 +792,7 @@ def main():
 
         ui.step("Static endpoint token enabled")
         ui.detail("MCP requests must carry a matching Authorization: Bearer header")
-        ui.detail(f"requests are pinned to {os.getenv('USER_GOOGLE_EMAIL')}")
+        ui.detail(f"requests are pinned to {pinned_email}")
 
     # Set global single-user mode flag
     if args.single_user:
