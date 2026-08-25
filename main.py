@@ -26,6 +26,7 @@ def _load_startup_dependencies():
         reload_oauth_config,
         is_stateless_mode,
         is_service_account_enabled,
+        is_static_endpoint_token_enabled,
     )
     from core.log_formatter import (
         EnhancedLogFormatter,
@@ -50,6 +51,7 @@ def _load_startup_dependencies():
         reload_oauth_config,
         is_stateless_mode,
         is_service_account_enabled,
+        is_static_endpoint_token_enabled,
         EnhancedLogFormatter,
         configure_file_logging,
         install_noisy_log_filters,
@@ -73,6 +75,7 @@ def _load_startup_dependencies():
     reload_oauth_config,
     is_stateless_mode,
     is_service_account_enabled,
+    is_static_endpoint_token_enabled,
     EnhancedLogFormatter,
     configure_file_logging,
     install_noisy_log_filters,
@@ -759,6 +762,36 @@ def main():
         )
 
     ui.section("Startup")
+
+    # A static endpoint token only takes effect in the legacy (non-OAuth-2.1)
+    # branch, where the server would otherwise run with no MCP-level auth. Under
+    # OAuth 2.1 the GoogleProvider owns protocol-level auth and would overwrite
+    # the verifier, so refuse the combination rather than ignoring the token.
+    if is_static_endpoint_token_enabled():
+        if os.getenv("MCP_ENABLE_OAUTH21", "false").lower() == "true":
+            ui.step(
+                "WORKSPACE_MCP_STATIC_TOKEN is incompatible with OAuth 2.1 mode",
+                state="fail",
+            )
+            ui.detail(
+                "OAuth 2.1 already gates the endpoint with per-user bearer tokens"
+            )
+            ui.detail(
+                "Choose one: WORKSPACE_MCP_STATIC_TOKEN OR MCP_ENABLE_OAUTH21=true"
+            )
+            sys.exit(1)
+
+        if not os.getenv("USER_GOOGLE_EMAIL"):
+            ui.step(
+                "WORKSPACE_MCP_STATIC_TOKEN requires USER_GOOGLE_EMAIL", state="fail"
+            )
+            ui.detail("The token is one shared secret, so it maps to one account")
+            ui.detail("Set USER_GOOGLE_EMAIL to the account requests should act as")
+            sys.exit(1)
+
+        ui.step("Static endpoint token enabled")
+        ui.detail("MCP requests must carry a matching Authorization: Bearer header")
+        ui.detail(f"requests are pinned to {os.getenv('USER_GOOGLE_EMAIL')}")
 
     # Set global single-user mode flag
     if args.single_user:

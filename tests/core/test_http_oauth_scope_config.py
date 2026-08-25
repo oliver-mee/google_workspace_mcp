@@ -221,3 +221,63 @@ def test_configure_server_for_http_passes_jwt_key_to_external_provider(monkeypat
         "jwt_signing_key must be a bytes object"
     )
     assert len(captured["jwt_signing_key"]) > 0, "jwt_signing_key must be non-empty"
+
+
+def _legacy_oauth_config():
+    return SimpleNamespace(is_oauth21_enabled=lambda: False, is_configured=lambda: True)
+
+
+def _stub_legacy_http(monkeypatch, calls):
+    monkeypatch.setattr(server_module, "get_transport_mode", lambda: "streamable-http")
+    monkeypatch.setattr(
+        server_module, "set_auth_provider", lambda provider: calls.append(provider)
+    )
+    monkeypatch.setattr(
+        server_module,
+        "_ensure_legacy_callback_route",
+        lambda: calls.append("callback"),
+    )
+    monkeypatch.setattr(server_module, "_auth_provider", object())
+    monkeypatch.setattr(server_module.server, "auth", object())
+    monkeypatch.setattr("auth.oauth_config.get_oauth_config", _legacy_oauth_config)
+
+
+def test_configure_server_for_http_installs_static_token_verifier(monkeypatch):
+    from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
+
+    calls = []
+    _stub_legacy_http(monkeypatch, calls)
+    monkeypatch.setattr(server_module, "get_static_endpoint_token", lambda: "s3cret")
+
+    server_module.configure_server_for_http()
+
+    assert isinstance(server_module.server.auth, StaticTokenVerifier)
+    assert "s3cret" in server_module.server.auth.tokens
+    # Google identity is untouched: the token only gates the endpoint.
+    assert server_module._auth_provider is None
+    assert calls == [None, "callback"]
+
+
+@pytest.mark.asyncio
+async def test_static_token_verifier_accepts_only_the_configured_token(monkeypatch):
+    calls = []
+    _stub_legacy_http(monkeypatch, calls)
+    monkeypatch.setattr(server_module, "get_static_endpoint_token", lambda: "s3cret")
+
+    server_module.configure_server_for_http()
+    verifier = server_module.server.auth
+
+    assert await verifier.verify_token("wrong") is None
+    accepted = await verifier.verify_token("s3cret")
+    assert accepted is not None
+    assert accepted.token == "s3cret"
+
+
+def test_configure_server_for_http_without_static_token_leaves_auth_unset(monkeypatch):
+    calls = []
+    _stub_legacy_http(monkeypatch, calls)
+    monkeypatch.setattr(server_module, "get_static_endpoint_token", lambda: None)
+
+    server_module.configure_server_for_http()
+
+    assert server_module.server.auth is None

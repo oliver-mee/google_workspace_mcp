@@ -23,6 +23,7 @@ from auth.oauth_config import (
     is_external_oauth21_provider,
     get_oauth_config,
     is_trust_gateway_identity,
+    get_static_endpoint_token,
 )
 from auth.oauth_responses import (
     create_error_response,
@@ -763,12 +764,33 @@ def configure_server_for_http():
             )
             raise
     else:
-        # Debug level: main.py surfaces the loopback default as a startup notice.
-        logger.debug(
-            "OAuth 2.0 legacy mode - streamable HTTP defaults to loopback unless "
-            "WORKSPACE_MCP_HOST is explicitly set."
-        )
-        server.auth = None
+        static_token = get_static_endpoint_token()
+        if static_token:
+            # A shared secret in front of the endpoint, for deployments that
+            # accept the documented risks of exposing legacy mode. It answers
+            # "may you talk to this server", never "whose Google account is
+            # this" - the principal is pinned separately in service_decorator.
+            from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
+
+            server.auth = StaticTokenVerifier(
+                tokens={
+                    static_token: {
+                        "client_id": "workspace-mcp-static-token",
+                        "scopes": [],
+                    }
+                }
+            )
+            logger.info(
+                "Static endpoint token enabled - MCP requests require a matching "
+                "Authorization: Bearer header"
+            )
+        else:
+            # Debug level: main.py surfaces the loopback default as a startup notice.
+            logger.debug(
+                "OAuth 2.0 legacy mode - streamable HTTP defaults to loopback unless "
+                "WORKSPACE_MCP_HOST is explicitly set."
+            )
+            server.auth = None
         _auth_provider = None
         set_auth_provider(None)
         _ensure_legacy_callback_route()

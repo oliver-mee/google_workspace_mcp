@@ -642,3 +642,20 @@ def is_trust_gateway_identity() -> bool:
 def is_service_account_enabled() -> bool:
     """Check if service account (domain-wide delegation) mode is enabled."""
     return get_oauth_config().is_service_account_enabled()
+
+
+def get_static_endpoint_token() -> Optional[str]:
+    """Return the shared secret gating the MCP endpoint, if one is configured.
+
+    This is deliberately independent of Google auth. It decides whether a caller
+    may talk to this server at all, never which Google account a request acts
+    as. Only meaningful outside OAuth 2.1 mode, where the HTTP transport has no
+    MCP-level auth provider of its own.
+    """
+    token = os.getenv("WORKSPACE_MCP_STATIC_TOKEN", "").strip()
+    return token or None
+
+
+def is_static_endpoint_token_enabled() -> bool:
+    """Check if a static endpoint token is configured."""
+    return get_static_endpoint_token() is not None

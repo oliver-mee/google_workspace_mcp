@@ -28,6 +28,7 @@ from auth.oauth_config import (
     is_external_oauth21_provider,
     is_service_account_enabled,
     is_trust_gateway_identity,
+    is_static_endpoint_token_enabled,
 )
 from core.context import set_fastmcp_session_id
 from core.telemetry import record_authenticated_user
@@ -500,6 +501,26 @@ def _extract_oauth20_user_email(
     bound_args.apply_defaults()
 
     user_google_email = bound_args.arguments.get("user_google_email")
+
+    # A static endpoint token is a single shared secret, so every caller holding
+    # it is the same principal. Letting that principal name an arbitrary account
+    # would turn one credential into access to every credential in the store, so
+    # the configured email wins over anything the caller passes.
+    if is_static_endpoint_token_enabled():
+        pinned_email = _get_configured_user_google_email()
+        if not pinned_email:
+            raise Exception(
+                "WORKSPACE_MCP_STATIC_TOKEN requires USER_GOOGLE_EMAIL so requests "
+                "are bound to a single Google account."
+            )
+        if user_google_email and user_google_email != pinned_email:
+            logger.warning(
+                "Ignoring caller-supplied user_google_email; static endpoint token "
+                "pins requests to the configured account."
+            )
+        kwargs["user_google_email"] = pinned_email
+        return pinned_email
+
     if not user_google_email:
         # Fall back to USER_GOOGLE_EMAIL env var for single-user / self-hosted mode.
         # This allows callers (agents) to omit the parameter when a default is configured.
