@@ -354,8 +354,18 @@ _brand_icons = (
     [Icon(src=_brand_config.brand_icon_url)] if _brand_config.brand_icon_url else None
 )
 
+# FastMCP defaults the version it reports in the MCP initialize handshake to
+# "1.0.0" when none is passed, which is what clients display (ChatGPT shows it on
+# the connector page). Report the real package version instead — the same value
+# /health already returns.
+try:
+    _server_version = metadata.version("workspace-mcp")
+except metadata.PackageNotFoundError:
+    _server_version = "dev"
+
 server = SecureFastMCP(
     name=_brand_config.brand_name or "google_workspace",
+    version=_server_version,
     auth=None,
     instructions=_server_instructions,
     website_url=_brand_config.brand_website_url,
