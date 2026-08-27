@@ -4,6 +4,7 @@ import pytest
 
 from core.server import server
 from core.utils import UserInputError
+from gslides.slides_helpers import strip_null_values
 from gslides.slides_tools import (
     _describe_elements,
     _extract_shape_text,
@@ -421,6 +422,21 @@ async def test_batch_update_prunes_nested_empty_schema_objects():
                 }
             }
         ]
+    }
+
+
+def test_strip_null_values_prunes_empty_objects_inside_lists():
+    assert strip_null_values(
+        {
+            "pageObjectIds": [None, "slide-1", {"ignored": None}],
+            "placeholderIdMappings": [
+                {"objectId": None},
+                {"objectId": "placeholder-1"},
+            ],
+        }
+    ) == {
+        "pageObjectIds": ["slide-1"],
+        "placeholderIdMappings": [{"objectId": "placeholder-1"}],
     }
 
 

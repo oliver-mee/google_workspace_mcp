@@ -16,55 +16,6 @@ _PRESENTATION_PAGE_ID_FIELDS = (
     "masters(objectId),layouts(objectId),notesMaster(objectId)"
 )
 
-_SLIDES_BATCH_REQUEST_TYPES = frozenset(
-    {
-        "createSlide",
-        "createShape",
-        "createTable",
-        "insertText",
-        "insertTableRows",
-        "insertTableColumns",
-        "deleteTableRow",
-        "deleteTableColumn",
-        "replaceAllText",
-        "deleteObject",
-        "updatePageElementTransform",
-        "updateSlidesPosition",
-        "deleteText",
-        "createImage",
-        "createVideo",
-        "createSheetsChart",
-        "createLine",
-        "refreshSheetsChart",
-        "updateShapeProperties",
-        "updateImageProperties",
-        "updateVideoProperties",
-        "updatePageProperties",
-        "updateTableCellProperties",
-        "updateLineProperties",
-        "createParagraphBullets",
-        "replaceAllShapesWithImage",
-        "duplicateObject",
-        "updateTextStyle",
-        "replaceAllShapesWithSheetsChart",
-        "deleteParagraphBullets",
-        "updateParagraphStyle",
-        "updateTableBorderProperties",
-        "updateTableColumnProperties",
-        "updateTableRowProperties",
-        "mergeTableCells",
-        "unmergeTableCells",
-        "groupObjects",
-        "ungroupObjects",
-        "updatePageElementAltText",
-        "replaceImage",
-        "updateSlideProperties",
-        "updatePageElementsZOrder",
-        "updateLineCategory",
-        "rerouteLine",
-    }
-)
-
 _SLIDES_BATCH_REQUEST_EXAMPLES = (
     "createSlide",
     "createShape",
@@ -825,6 +776,8 @@ _SLIDES_BATCH_REQUEST_PAYLOAD_SCHEMAS: Dict[str, Dict[str, Any]] = {
     },
 }
 
+_SLIDES_BATCH_REQUEST_TYPES = frozenset(_SLIDES_BATCH_REQUEST_PAYLOAD_SCHEMAS)
+
 SLIDES_BATCH_UPDATE_REQUESTS_JSON_SCHEMA_EXTRA = {
     "minItems": 1,
     "items": {
@@ -855,15 +808,12 @@ def strip_null_values(value: Any, *, _depth: int = 0) -> Any:
         return cleaned
 
     if isinstance(value, list):
-        cleaned_items = []
-        for item in value:
-            if item is None:
-                continue
-            cleaned_item = strip_null_values(item, _depth=_depth + 1)
-            if _depth >= 2 and cleaned_item == {}:
-                continue
-            cleaned_items.append(cleaned_item)
-        return cleaned_items
+        cleaned_items = [strip_null_values(item, _depth=_depth + 1) for item in value]
+        return [
+            item
+            for item in cleaned_items
+            if item is not None and not (isinstance(item, dict) and not item)
+        ]
 
     return value
 
