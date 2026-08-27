@@ -66,6 +66,11 @@ Apply batch update requests to a presentation. This is the primary tool for modi
 
 Each item in `requests` is a dict with exactly one key corresponding to a Slides API request type. Common request types:
 
+The live MCP schema enumerates all 44 supported request types and exposes each
+request's payload shape through an `anyOf` schema. Use the tool schema as the
+authoritative list when constructing less common requests; the runtime still accepts
+raw request dictionaries so newer API fields remain forward-compatible.
+
 | Request type | Purpose |
 |--------------|---------|
 | `createSlide` | Add a new slide |
