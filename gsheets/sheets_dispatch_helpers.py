@@ -294,6 +294,415 @@ async def table_delete(
 
 
 # ---------------------------------------------------------------------------
+# Tabs family
+# ---------------------------------------------------------------------------
+
+
+async def _resolve_sheet(
+    service, spreadsheet_id: str, sheet_name: str, action: str
+) -> dict:
+    sheets = await _get_sheet_properties(service, spreadsheet_id)
+    for sheet in sheets:
+        if sheet.get("properties", {}).get("title") == sheet_name:
+            return sheet
+    raise UserInputError(
+        f"Sheet '{sheet_name}' not found in spreadsheet {spreadsheet_id} "
+        f"for the '{action}' action."
+    )
+
+
+async def tab_add(
+    service,
+    spreadsheet_id: str,
+    new_tab_name: Optional[str] = None,
+    index: Optional[int] = None,
+    tab_color: Optional[str] = None,
+) -> str:
+    """Add a tab (sheet) to the spreadsheet."""
+    _require(new_tab_name, "new_tab_name", "tab_add")
+    properties: dict = {"title": new_tab_name}
+    if index is not None:
+        if not isinstance(index, int) or index < 0:
+            raise UserInputError("index must be a non-negative integer.")
+        properties["index"] = index
+    parsed_color = _parse_hex_color(tab_color)
+    if parsed_color:
+        properties["tabColor"] = parsed_color
+
+    response = await _batch_update(
+        service, spreadsheet_id, [{"addSheet": {"properties": properties}}]
+    )
+    replies = response.get("replies") or [{}]
+    new_id = replies[0].get("addSheet", {}).get("properties", {}).get("sheetId")
+    return (
+        f"Added tab '{new_tab_name}' (sheetId: {new_id if new_id is not None else '(unavailable)'}) "
+        f"to spreadsheet {spreadsheet_id}."
+    )
+
+
+async def tab_rename(
+    service,
+    spreadsheet_id: str,
+    sheet_name: Optional[str] = None,
+    new_tab_name: Optional[str] = None,
+) -> str:
+    """Rename a tab."""
+    _require(sheet_name, "sheet_name", "tab_rename")
+    _require(new_tab_name, "new_tab_name", "tab_rename")
+    sheet = await _resolve_sheet(service, spreadsheet_id, sheet_name, "tab_rename")
+    sheet_id = sheet["properties"]["sheetId"]
+    await _batch_update(
+        service,
+        spreadsheet_id,
+        [
+            {
+                "updateSheetProperties": {
+                    "properties": {"sheetId": sheet_id, "title": new_tab_name},
+                    "fields": "title",
+                }
+            }
+        ],
+    )
+    return (
+        f"Renamed tab '{sheet_name}' to '{new_tab_name}' "
+        f"in spreadsheet {spreadsheet_id}."
+    )
+
+
+async def tab_reorder(
+    service,
+    spreadsheet_id: str,
+    sheet_name: Optional[str] = None,
+    index: Optional[int] = None,
+) -> str:
+    """Move a tab to a new 0-based position."""
+    _require(sheet_name, "sheet_name", "tab_reorder")
+    if index is None or not isinstance(index, int) or index < 0:
+        raise UserInputError(
+            "index (0-based target position) is required for the 'tab_reorder' action."
+        )
+    sheet = await _resolve_sheet(service, spreadsheet_id, sheet_name, "tab_reorder")
+    sheet_id = sheet["properties"]["sheetId"]
+    await _batch_update(
+        service,
+        spreadsheet_id,
+        [
+            {
+                "updateSheetProperties": {
+                    "properties": {"sheetId": sheet_id, "index": index},
+                    "fields": "index",
+                }
+            }
+        ],
+    )
+    return (
+        f"Moved tab '{sheet_name}' to position {index} in spreadsheet {spreadsheet_id}."
+    )
+
+
+async def delete_tab(
+    service,
+    spreadsheet_id: str,
+    sheet_name: Optional[str] = None,
+) -> str:
+    """Delete a tab and all its contents. Data-destructive."""
+    _require(sheet_name, "sheet_name", "delete_tab")
+    sheets = await _get_sheet_properties(service, spreadsheet_id)
+    if len(sheets) <= 1:
+        raise UserInputError(
+            "Cannot delete the only tab of a spreadsheet; a spreadsheet must "
+            "contain at least one sheet."
+        )
+    target = None
+    for sheet in sheets:
+        if sheet.get("properties", {}).get("title") == sheet_name:
+            target = sheet
+            break
+    if not target:
+        raise UserInputError(
+            f"Sheet '{sheet_name}' not found in spreadsheet {spreadsheet_id}."
+        )
+    sheet_id = target["properties"]["sheetId"]
+    await _batch_update(
+        service, spreadsheet_id, [{"deleteSheet": {"sheetId": sheet_id}}]
+    )
+    return (
+        f"Deleted tab '{sheet_name}' and all its contents "
+        f"from spreadsheet {spreadsheet_id}."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Ranges family: merge, find-replace, named ranges, copy
+# ---------------------------------------------------------------------------
+
+
+MERGE_TYPES = {"MERGE_ALL", "MERGE_COLUMNS", "MERGE_ROWS"}
+
+
+async def merge_cells(
+    service,
+    spreadsheet_id: str,
+    range_name: Optional[str] = None,
+    merge_type: str = "MERGE_ALL",
+) -> str:
+    """Merge the cells of range_name."""
+    _require(range_name, "range_name", "merge")
+    normalized = (merge_type or "").upper()
+    if normalized not in MERGE_TYPES:
+        raise UserInputError(f"merge_type must be one of {sorted(MERGE_TYPES)}.")
+    sheets = await _get_sheet_properties(service, spreadsheet_id)
+    grid_range = _parse_a1_range(range_name, sheets)
+    await _batch_update(
+        service,
+        spreadsheet_id,
+        [{"mergeCells": {"range": grid_range, "mergeType": normalized}}],
+    )
+    return (
+        f"Merged range '{range_name}' ({normalized}) in spreadsheet {spreadsheet_id}."
+    )
+
+
+async def unmerge_cells(
+    service,
+    spreadsheet_id: str,
+    range_name: Optional[str] = None,
+) -> str:
+    """Unmerge all merged cells intersecting range_name."""
+    _require(range_name, "range_name", "unmerge")
+    sheets = await _get_sheet_properties(service, spreadsheet_id)
+    grid_range = _parse_a1_range(range_name, sheets)
+    await _batch_update(
+        service, spreadsheet_id, [{"unmergeCells": {"range": grid_range}}]
+    )
+    return f"Unmerged range '{range_name}' in spreadsheet {spreadsheet_id}."
+
+
+async def find_replace(
+    service,
+    spreadsheet_id: str,
+    find: Optional[str] = None,
+    replacement: Optional[str] = None,
+    sheet_name: Optional[str] = None,
+    range_name: Optional[str] = None,
+    match_case: bool = False,
+    match_entire_cell: bool = False,
+    search_by_regex: bool = False,
+    include_formulas: bool = False,
+) -> str:
+    """Find and replace across the spreadsheet, one tab, or an A1 range."""
+    _require(find, "find", "find_replace")
+    if replacement is None:
+        raise UserInputError("'replacement' is required for the 'find_replace' action.")
+    if sheet_name and range_name:
+        raise UserInputError("Provide sheet_name or range_name, not both.")
+
+    request: dict = {
+        "find": find,
+        "replacement": replacement,
+        "matchCase": match_case,
+        "matchEntireCell": match_entire_cell,
+        "searchByRegex": search_by_regex,
+        "includeFormulas": include_formulas,
+    }
+    if range_name:
+        sheets = await _get_sheet_properties(service, spreadsheet_id)
+        request["range"] = _parse_a1_range(range_name, sheets)
+    elif sheet_name:
+        sheet = await _resolve_sheet(
+            service, spreadsheet_id, sheet_name, "find_replace"
+        )
+        request["sheetId"] = sheet["properties"]["sheetId"]
+    else:
+        request["allSheets"] = True
+
+    response = await _batch_update(service, spreadsheet_id, [{"findReplace": request}])
+    replies = response.get("replies") or [{}]
+    occurrences = replies[0].get("findReplace", {}).get("occurrencesChanged", "?")
+    scope = range_name or sheet_name or "all sheets"
+    return (
+        f"Replaced {occurrences} occurrence(s) of '{find}' with '{replacement}' "
+        f"in {scope} of spreadsheet {spreadsheet_id}."
+    )
+
+
+async def _fetch_named_ranges(service, spreadsheet_id: str) -> List[dict]:
+    spreadsheet = await asyncio.to_thread(
+        service.spreadsheets()
+        .get(spreadsheetId=spreadsheet_id, fields="namedRanges")
+        .execute
+    )
+    return spreadsheet.get("namedRanges", []) or []
+
+
+async def named_range_add(
+    service,
+    spreadsheet_id: str,
+    name: Optional[str] = None,
+    range_name: Optional[str] = None,
+) -> str:
+    """Name an A1 range."""
+    _require(name, "name", "named_range_add")
+    _require(range_name, "range_name", "named_range_add")
+    sheets = await _get_sheet_properties(service, spreadsheet_id)
+    grid_range = _parse_a1_range(range_name, sheets)
+    response = await _batch_update(
+        service,
+        spreadsheet_id,
+        [{"addNamedRange": {"namedRange": {"name": name, "range": grid_range}}}],
+    )
+    replies = response.get("replies") or [{}]
+    nr_id = (
+        replies[0].get("addNamedRange", {}).get("namedRange", {}).get("namedRangeId")
+    )
+    return (
+        f"Added named range '{name}' over '{range_name}' "
+        f"(ID: {nr_id or '(unavailable)'}) in spreadsheet {spreadsheet_id}."
+    )
+
+
+async def named_range_delete(
+    service,
+    spreadsheet_id: str,
+    name: Optional[str] = None,
+    named_range_id: Optional[str] = None,
+) -> str:
+    """Delete a named range by id or exact name. Cell values are unaffected."""
+    if not named_range_id and not name:
+        raise UserInputError(
+            "'named_range_id' (or 'name') is required for the 'named_range_delete' action."
+        )
+    target_id = named_range_id
+    if not target_id:
+        for nr in await _fetch_named_ranges(service, spreadsheet_id):
+            if nr.get("name") == name:
+                target_id = nr.get("namedRangeId")
+                break
+        if not target_id:
+            raise UserInputError(
+                f"No named range '{name}' in spreadsheet {spreadsheet_id}."
+            )
+    await _batch_update(
+        service, spreadsheet_id, [{"deleteNamedRange": {"namedRangeId": target_id}}]
+    )
+    return (
+        f"Deleted named range '{name or target_id}' from spreadsheet {spreadsheet_id}. "
+        "Cell values were unaffected."
+    )
+
+
+def _describe_named_range(nr: dict) -> str:
+    grid = nr.get("range", {})
+    return (
+        f"- '{nr.get('name', '')}' (ID: {nr.get('namedRangeId', '')}): "
+        f"sheetId {grid.get('sheetId', '?')}, "
+        f"rows {grid.get('startRowIndex', '?')}–{grid.get('endRowIndex', '?')}, "
+        f"cols {grid.get('startColumnIndex', '?')}–{grid.get('endColumnIndex', '?')} (0-based)"
+    )
+
+
+async def named_range_list(service, spreadsheet_id: str) -> str:
+    """List all named ranges."""
+    named_ranges = await _fetch_named_ranges(service, spreadsheet_id)
+    if not named_ranges:
+        return f"Spreadsheet {spreadsheet_id} has no named ranges."
+    lines = [f"Named ranges in spreadsheet {spreadsheet_id}:"]
+    lines.extend(_describe_named_range(nr) for nr in named_ranges)
+    return "\n".join(lines)
+
+
+async def named_range_get(
+    service,
+    spreadsheet_id: str,
+    name: Optional[str] = None,
+) -> str:
+    """Describe one named range by exact name."""
+    _require(name, "name", "named_range_get")
+    for nr in await _fetch_named_ranges(service, spreadsheet_id):
+        if nr.get("name") == name:
+            return _describe_named_range(nr).lstrip("- ")
+    raise UserInputError(f"No named range '{name}' in spreadsheet {spreadsheet_id}.")
+
+
+async def sheet_copy(
+    service,
+    spreadsheet_id: str,
+    sheet_name: Optional[str] = None,
+    destination_spreadsheet_id: Optional[str] = None,
+) -> str:
+    """Copy a tab into another spreadsheet (Sheets copyTo)."""
+    _require(sheet_name, "sheet_name", "sheet_copy")
+    _require(
+        destination_spreadsheet_id,
+        "destination_spreadsheet_id",
+        "sheet_copy",
+    )
+    sheet = await _resolve_sheet(service, spreadsheet_id, sheet_name, "sheet_copy")
+    sheet_id = sheet["properties"]["sheetId"]
+    response = await asyncio.to_thread(
+        service.spreadsheets()
+        .sheets()
+        .copyTo(
+            spreadsheetId=spreadsheet_id,
+            sheetId=sheet_id,
+            body={"destinationSpreadsheetId": destination_spreadsheet_id},
+        )
+        .execute
+    )
+    new_title = response.get("title", f"Copy of {sheet_name}")
+    return (
+        f"Copied tab '{sheet_name}' from {spreadsheet_id} to "
+        f"{destination_spreadsheet_id} as '{new_title}'."
+    )
+
+
+PASTE_TYPES = {
+    "PASTE_NORMAL",
+    "PASTE_VALUES",
+    "PASTE_FORMAT",
+    "PASTE_NO_BORDERS",
+    "PASTE_FORMULA",
+    "PASTE_DATA_VALIDATION",
+    "PASTE_CONDITIONAL_FORMATTING",
+}
+
+
+async def copy_paste(
+    service,
+    spreadsheet_id: str,
+    source_range: Optional[str] = None,
+    destination_range: Optional[str] = None,
+    paste_type: str = "PASTE_NORMAL",
+) -> str:
+    """Copy-paste between A1 ranges within the spreadsheet."""
+    _require(source_range, "source_range", "copy_paste")
+    _require(destination_range, "destination_range", "copy_paste")
+    normalized = (paste_type or "").upper()
+    if normalized not in PASTE_TYPES:
+        raise UserInputError(f"paste_type must be one of {sorted(PASTE_TYPES)}.")
+    sheets = await _get_sheet_properties(service, spreadsheet_id)
+    source_grid = _parse_a1_range(source_range, sheets)
+    destination_grid = _parse_a1_range(destination_range, sheets)
+    await _batch_update(
+        service,
+        spreadsheet_id,
+        [
+            {
+                "copyPaste": {
+                    "source": source_grid,
+                    "destination": destination_grid,
+                    "pasteType": normalized,
+                }
+            }
+        ],
+    )
+    return (
+        f"Copied '{source_range}' to '{destination_range}' ({normalized}) "
+        f"in spreadsheet {spreadsheet_id}."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Absorbed existing tools family: format_range / conditional_format /
 # resize_dimensions / move_rows
 #

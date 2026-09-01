@@ -2473,7 +2473,11 @@ from typing import Literal  # noqa: E402
 from auth.permissions import is_action_denied  # noqa: E402
 from gsheets import sheets_dispatch_helpers as dispatch  # noqa: E402
 
-SHEETS_READ_ACTIONS = ("table_get",)
+SHEETS_READ_ACTIONS = (
+    "table_get",
+    "named_range_get",
+    "named_range_list",
+)
 
 SHEETS_MANAGE_ACTIONS = (
     "table_create",
@@ -2481,12 +2485,23 @@ SHEETS_MANAGE_ACTIONS = (
     "conditional_format",
     "resize_dimensions",
     "move_rows",
+    "tab_add",
+    "tab_rename",
+    "tab_reorder",
+    "merge",
+    "unmerge",
+    "find_replace",
+    "named_range_add",
+    "named_range_delete",
+    "sheet_copy",
+    "copy_paste",
 )
 
 SHEETS_DELETE_ACTIONS = (
     "table_clear",
     "table_delete",
     "delete_dimension",
+    "delete_tab",
 )
 
 
@@ -2505,7 +2520,11 @@ async def sheets_read(
     service,
     user_google_email: str,
     spreadsheet_id: str,
-    action: Literal["table_get",],
+    action: Literal[
+        "table_get",
+        "named_range_get",
+        "named_range_list",
+    ],
     sheet_name: Optional[str] = None,
     range_name: Optional[str] = None,
     table_id: Optional[str] = None,
@@ -2519,6 +2538,8 @@ async def sheets_read(
       - table_get: describe one native table (range, typed columns, dropdown
         choices). Identify it with table_id or table_name; use
         list_sheet_tables to discover IDs.
+      - named_range_get: describe one named range by params.name (exact).
+      - named_range_list: list all named ranges in the spreadsheet.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
@@ -2538,12 +2559,18 @@ async def sheets_read(
         f"[sheets_read] Email: '{user_google_email}', action: '{action}', "
         f"spreadsheet: {spreadsheet_id}"
     )
-    dispatch._normalize_params(params)  # validates early; used by later families
+    extra = dispatch._normalize_params(params)
 
     if action == "table_get":
         return await dispatch.table_get(
             service, spreadsheet_id, table_id=table_id, table_name=table_name
         )
+    elif action == "named_range_get":
+        return await dispatch.named_range_get(
+            service, spreadsheet_id, name=extra.get("name")
+        )
+    elif action == "named_range_list":
+        return await dispatch.named_range_list(service, spreadsheet_id)
     return f"Unknown action '{action}'. Valid: {', '.join(SHEETS_READ_ACTIONS)}"
 
 
@@ -2568,6 +2595,16 @@ async def sheets_manage(
         "conditional_format",
         "resize_dimensions",
         "move_rows",
+        "tab_add",
+        "tab_rename",
+        "tab_reorder",
+        "merge",
+        "unmerge",
+        "find_replace",
+        "named_range_add",
+        "named_range_delete",
+        "sheet_copy",
+        "copy_paste",
     ],
     sheet_name: Optional[str] = None,
     range_name: Optional[str] = None,
@@ -2626,6 +2663,25 @@ async def sheets_manage(
         sheet_name (or params.source_sheet) to destination_sheet. params
         fields: source_sheet, start_row, end_row (int). Rows are appended
         below the destination's data; formatting and formulas are preserved.
+      - tab_add: add a tab. params: new_tab_name (required), index (0-based
+        position), tab_color (hex).
+      - tab_rename: rename sheet_name to params.new_tab_name.
+      - tab_reorder: move sheet_name to params.index (0-based position).
+      - merge: merge the cells of range_name; params.merge_type is MERGE_ALL
+        (default), MERGE_COLUMNS or MERGE_ROWS.
+      - unmerge: unmerge all merged cells intersecting range_name.
+      - find_replace: find and replace. params: find, replacement (required),
+        sheet_name or range_name scope (default: all sheets), match_case,
+        match_entire_cell, search_by_regex, include_formulas (bool).
+      - named_range_add: name range_name as params.name.
+      - named_range_delete: delete a named range by params.named_range_id or
+        params.name. Cell values are unaffected.
+      - sheet_copy: copy tab sheet_name into another spreadsheet.
+        params.destination_spreadsheet_id required.
+      - copy_paste: copy-paste between A1 ranges. params: source_range,
+        destination_range (required), paste_type (PASTE_NORMAL default;
+        also PASTE_VALUES, PASTE_FORMAT, PASTE_NO_BORDERS, PASTE_FORMULA,
+        PASTE_DATA_VALIDATION, PASTE_CONDITIONAL_FORMATTING).
 
     Args:
         user_google_email (str): The user's Google email address. Required.
@@ -2724,6 +2780,83 @@ async def sheets_manage(
             end_row=extra.get("end_row"),
             destination_sheet=destination_sheet or extra.get("destination_sheet"),
         )
+    elif action == "tab_add":
+        return await dispatch.tab_add(
+            service,
+            spreadsheet_id,
+            new_tab_name=extra.get("new_tab_name"),
+            index=extra.get("index"),
+            tab_color=extra.get("tab_color"),
+        )
+    elif action == "tab_rename":
+        return await dispatch.tab_rename(
+            service,
+            spreadsheet_id,
+            sheet_name=sheet_name or extra.get("sheet_name"),
+            new_tab_name=extra.get("new_tab_name"),
+        )
+    elif action == "tab_reorder":
+        return await dispatch.tab_reorder(
+            service,
+            spreadsheet_id,
+            sheet_name=sheet_name or extra.get("sheet_name"),
+            index=extra.get("index"),
+        )
+    elif action == "merge":
+        return await dispatch.merge_cells(
+            service,
+            spreadsheet_id,
+            range_name=range_name or extra.get("range_name"),
+            merge_type=extra.get("merge_type", "MERGE_ALL"),
+        )
+    elif action == "unmerge":
+        return await dispatch.unmerge_cells(
+            service,
+            spreadsheet_id,
+            range_name=range_name or extra.get("range_name"),
+        )
+    elif action == "find_replace":
+        return await dispatch.find_replace(
+            service,
+            spreadsheet_id,
+            find=extra.get("find"),
+            replacement=extra.get("replacement"),
+            sheet_name=sheet_name or extra.get("sheet_name"),
+            range_name=range_name or extra.get("range_name"),
+            match_case=extra.get("match_case", False),
+            match_entire_cell=extra.get("match_entire_cell", False),
+            search_by_regex=extra.get("search_by_regex", False),
+            include_formulas=extra.get("include_formulas", False),
+        )
+    elif action == "named_range_add":
+        return await dispatch.named_range_add(
+            service,
+            spreadsheet_id,
+            name=extra.get("name"),
+            range_name=range_name or extra.get("range_name"),
+        )
+    elif action == "named_range_delete":
+        return await dispatch.named_range_delete(
+            service,
+            spreadsheet_id,
+            name=extra.get("name"),
+            named_range_id=extra.get("named_range_id"),
+        )
+    elif action == "sheet_copy":
+        return await dispatch.sheet_copy(
+            service,
+            spreadsheet_id,
+            sheet_name=sheet_name or extra.get("sheet_name"),
+            destination_spreadsheet_id=extra.get("destination_spreadsheet_id"),
+        )
+    elif action == "copy_paste":
+        return await dispatch.copy_paste(
+            service,
+            spreadsheet_id,
+            source_range=extra.get("source_range"),
+            destination_range=extra.get("destination_range"),
+            paste_type=extra.get("paste_type", "PASTE_NORMAL"),
+        )
     return f"Unknown action '{action}'. Valid: {', '.join(SHEETS_MANAGE_ACTIONS)}"
 
 
@@ -2746,6 +2879,7 @@ async def sheets_delete(
         "table_clear",
         "table_delete",
         "delete_dimension",
+        "delete_tab",
     ],
     sheet_name: Optional[str] = None,
     range_name: Optional[str] = None,
@@ -2769,6 +2903,8 @@ async def sheets_delete(
         the first sheet). Exactly one of params.delete_rows (list of 1-based
         row numbers), params.delete_row_range ("5:10") or
         params.delete_columns (list of column letters) is required.
+      - delete_tab: delete tab sheet_name and all its contents. Refused when
+        it is the spreadsheet's only tab.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
@@ -2811,5 +2947,9 @@ async def sheets_delete(
             delete_rows=extra.get("delete_rows"),
             delete_row_range=extra.get("delete_row_range"),
             delete_columns=extra.get("delete_columns"),
+        )
+    elif action == "delete_tab":
+        return await dispatch.delete_tab(
+            service, spreadsheet_id, sheet_name=sheet_name or extra.get("sheet_name")
         )
     return f"Unknown action '{action}'. Valid: {', '.join(SHEETS_DELETE_ACTIONS)}"
