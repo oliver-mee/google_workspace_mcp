@@ -2455,3 +2455,241 @@ _comment_tools = create_comment_tools("spreadsheet", "spreadsheet_id")
 # Extract and register the functions
 list_spreadsheet_comments = _comment_tools["list_comments"]
 manage_spreadsheet_comment = _comment_tools["manage_comment"]
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher tools: sheets_read / sheets_manage / sheets_delete
+#
+# The service surface collapses into three tools split by scope family and
+# destructiveness (FINAL-SURFACE permission model, decision 2):
+#   sheets_read   - read-only actions, loads at sheets:readonly
+#   sheets_manage - non-destructive writes, loads at sheets:manage/full
+#   sheets_delete - data-destructive actions, denied at sheets:manage via
+#                   SERVICE_DENIED_ACTIONS; carries destructiveHint
+# ---------------------------------------------------------------------------
+
+from typing import Literal  # noqa: E402
+
+from auth.permissions import is_action_denied  # noqa: E402
+from gsheets import sheets_dispatch_helpers as dispatch  # noqa: E402
+
+SHEETS_READ_ACTIONS = ("table_get",)
+
+SHEETS_MANAGE_ACTIONS = ("table_create",)
+
+SHEETS_DELETE_ACTIONS = (
+    "table_clear",
+    "table_delete",
+)
+
+
+@server.tool(
+    title="Read Sheets",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@require_google_service("sheets", "sheets_read")
+@handle_http_errors("sheets_read", is_read_only=True, service_type="sheets")
+async def sheets_read(
+    service,
+    user_google_email: str,
+    spreadsheet_id: str,
+    action: Literal["table_get",],
+    sheet_name: Optional[str] = None,
+    range_name: Optional[str] = None,
+    table_id: Optional[str] = None,
+    table_name: Optional[str] = None,
+    params: Optional[Union[dict, str]] = None,
+) -> str:
+    """
+    Read-only Google Sheets operations beyond plain value reads.
+
+    Actions:
+      - table_get: describe one native table (range, typed columns, dropdown
+        choices). Identify it with table_id or table_name; use
+        list_sheet_tables to discover IDs.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        spreadsheet_id (str): The ID of the spreadsheet. Required.
+        action (str): One of the actions listed above. Required.
+        sheet_name (str): Tab name for actions that take one.
+        range_name (str): A1 range for actions that take one.
+        table_id (str): Native table ID.
+        table_name (str): Native table name (exact match).
+        params (dict): Action-specific fields for actions that take more than
+            the named parameters above; see the per-action docs.
+
+    Returns:
+        str: Human-readable result of the operation.
+    """
+    logger.info(
+        f"[sheets_read] Email: '{user_google_email}', action: '{action}', "
+        f"spreadsheet: {spreadsheet_id}"
+    )
+    dispatch._normalize_params(params)  # validates early; used by later families
+
+    if action == "table_get":
+        return await dispatch.table_get(
+            service, spreadsheet_id, table_id=table_id, table_name=table_name
+        )
+    return f"Unknown action '{action}'. Valid: {', '.join(SHEETS_READ_ACTIONS)}"
+
+
+@server.tool(
+    title="Manage Sheets",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+@require_google_service("sheets", "sheets_write")
+@handle_http_errors("sheets_manage", service_type="sheets")
+async def sheets_manage(
+    service,
+    user_google_email: str,
+    spreadsheet_id: str,
+    action: Literal["table_create",],
+    sheet_name: Optional[str] = None,
+    range_name: Optional[str] = None,
+    table_id: Optional[str] = None,
+    table_name: Optional[str] = None,
+    column_properties: Optional[Union[str, List[dict]]] = None,
+    header_color: Optional[str] = None,
+    footer_color: Optional[str] = None,
+    first_band_color: Optional[str] = None,
+    second_band_color: Optional[str] = None,
+    params: Optional[Union[dict, str]] = None,
+) -> str:
+    """
+    Non-destructive Google Sheets write operations.
+
+    Nothing dispatched here destroys user data; data-destructive operations
+    live in sheets_delete (which requires the sheets:full permission level).
+
+    Actions:
+      - table_create: create a native table over range_name (which must
+        include the header row, e.g. 'Sheet1!A1:D50'). column_properties is a
+        list (or JSON list) of {"columnName", "columnType", "columnIndex"?,
+        "values"?}; valid types: DOUBLE, CURRENCY, PERCENT, DATE, TIME,
+        DATE_TIME, TEXT, BOOLEAN, DROPDOWN (values required), FILES_CHIP,
+        PEOPLE_CHIP, FINANCE_CHIP, PLACE_CHIP, RATINGS_CHIP. Colors are hex.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        spreadsheet_id (str): The ID of the spreadsheet. Required.
+        action (str): One of the actions listed above. Required.
+        sheet_name (str): Tab name for actions that take one.
+        range_name (str): A1 range for actions that take one.
+        table_id (str): Native table ID for actions that target a table.
+        table_name (str): Table name for table_create.
+        column_properties (list|str): Typed column definitions for table_create.
+        header_color (str): Hex color for the table header row.
+        footer_color (str): Hex color for the table footer row.
+        first_band_color (str): Hex color for odd banded rows.
+        second_band_color (str): Hex color for even banded rows.
+        params (dict): Action-specific fields for actions that take more than
+            the named parameters above; see the per-action docs.
+
+    Returns:
+        str: Confirmation describing what was changed.
+    """
+    logger.info(
+        f"[sheets_manage] Email: '{user_google_email}', action: '{action}', "
+        f"spreadsheet: {spreadsheet_id}"
+    )
+    extra = dispatch._normalize_params(params)
+
+    if action == "table_create":
+        return await dispatch.table_create(
+            service,
+            spreadsheet_id,
+            table_name=table_name or extra.get("table_name"),
+            range_name=range_name or extra.get("range_name"),
+            column_properties=column_properties or extra.get("column_properties"),
+            header_color=header_color or extra.get("header_color"),
+            footer_color=footer_color or extra.get("footer_color"),
+            first_band_color=first_band_color or extra.get("first_band_color"),
+            second_band_color=second_band_color or extra.get("second_band_color"),
+        )
+    return f"Unknown action '{action}'. Valid: {', '.join(SHEETS_MANAGE_ACTIONS)}"
+
+
+@server.tool(
+    title="Delete From Sheets",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+@require_google_service("sheets", "sheets_write")
+@handle_http_errors("sheets_delete", service_type="sheets")
+async def sheets_delete(
+    service,
+    user_google_email: str,
+    spreadsheet_id: str,
+    action: Literal[
+        "table_clear",
+        "table_delete",
+    ],
+    sheet_name: Optional[str] = None,
+    range_name: Optional[str] = None,
+    table_id: Optional[str] = None,
+    table_name: Optional[str] = None,
+    params: Optional[Union[dict, str]] = None,
+) -> str:
+    """
+    Data-destructive Google Sheets operations.
+
+    Every action here destroys user data. The whole tool is denied under the
+    sheets:manage permission level (it requires sheets:full) and can be
+    disabled outright with WORKSPACE_MCP_DISABLED_TOOLS=sheets_delete.
+
+    Actions:
+      - table_clear: clear all data rows of a native table, keeping the table
+        and its header row. Identify with table_id or table_name.
+      - table_delete: delete a native table by id (cell values are left in
+        place). Identify with table_id or table_name.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        spreadsheet_id (str): The ID of the spreadsheet. Required.
+        action (str): One of the actions listed above. Required.
+        sheet_name (str): Tab name for actions that take one.
+        range_name (str): A1 range for actions that take one.
+        table_id (str): Native table ID.
+        table_name (str): Native table name (exact match).
+        params (dict): Action-specific fields; see the per-action docs.
+
+    Returns:
+        str: Confirmation describing what was destroyed.
+    """
+    logger.info(
+        f"[sheets_delete] Email: '{user_google_email}', action: '{action}', "
+        f"spreadsheet: {spreadsheet_id}"
+    )
+    dispatch._normalize_params(params)  # validates early; used by later families
+
+    if is_action_denied("sheets", action):
+        raise UserInputError(
+            f"The '{action}' action is not allowed under the current permission "
+            "level (sheets:full is required for destructive operations)."
+        )
+
+    if action == "table_clear":
+        return await dispatch.table_clear(
+            service, spreadsheet_id, table_id=table_id, table_name=table_name
+        )
+    elif action == "table_delete":
+        return await dispatch.table_delete(
+            service, spreadsheet_id, table_id=table_id, table_name=table_name
+        )
+    return f"Unknown action '{action}'. Valid: {', '.join(SHEETS_DELETE_ACTIONS)}"

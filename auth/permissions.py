@@ -84,7 +84,11 @@ SERVICE_PERMISSION_LEVELS: Dict[str, List[Tuple[str, List[str]]]] = {
     ],
     "sheets": [
         ("readonly", [SHEETS_READONLY_SCOPE, DRIVE_READONLY_SCOPE]),
-        ("full", [SHEETS_WRITE_SCOPE, DRIVE_READONLY_SCOPE]),
+        # manage = full write scopes minus data-destructive actions (carved by
+        # SERVICE_DENIED_ACTIONS below). Sheets has no narrower Google scope
+        # for delete, so the split is server-enforced, not scope-enforced.
+        ("manage", [SHEETS_WRITE_SCOPE, DRIVE_READONLY_SCOPE]),
+        ("full", []),
     ],
     "chat": [
         ("readonly", [CHAT_READONLY_SCOPE, CHAT_SPACES_READONLY_SCOPE]),
@@ -141,6 +145,18 @@ SERVICE_PERMISSION_LEVELS: Dict[str, List[Tuple[str, List[str]]]] = {
 SERVICE_DENIED_ACTIONS: Dict[str, Dict[str, FrozenSet[str]]] = {
     "tasks": {
         "manage": frozenset({"delete", "clear_completed"}),
+    },
+    "sheets": {
+        # Data-destructive sheets_delete actions require sheets:full.
+        "manage": frozenset(
+            {
+                "table_clear",
+                "table_delete",
+                "range_clear",
+                "delete_dimension",
+                "delete_tab",
+            }
+        ),
     },
 }
 

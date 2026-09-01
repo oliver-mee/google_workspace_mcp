@@ -87,6 +87,7 @@ sheets:
     - get_spreadsheet_info
     - format_sheet_range
     - list_sheet_tables
+    - sheets_read
   complete:
     - create_sheet
     - append_table_rows
@@ -95,6 +96,8 @@ sheets:
     - list_spreadsheet_comments
     - manage_spreadsheet_comment
     - manage_conditional_formatting
+    - sheets_manage
+    - sheets_delete
 
 chat:
   core:
