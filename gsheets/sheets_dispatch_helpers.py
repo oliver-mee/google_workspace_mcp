@@ -1370,6 +1370,251 @@ async def links_get(
 
 
 # ---------------------------------------------------------------------------
+# Read family: metadata, format reads, get, export, datasources
+# ---------------------------------------------------------------------------
+
+
+async def sheets_get_metadata(service, spreadsheet_id: str) -> str:
+    """Spreadsheet summary: title, locale, timezone, tabs with grid sizes."""
+    spreadsheet = await asyncio.to_thread(
+        service.spreadsheets()
+        .get(
+            spreadsheetId=spreadsheet_id,
+            fields="properties(title,locale,timeZone),sheets(properties(sheetId,title,index,gridProperties))",
+        )
+        .execute
+    )
+    props = spreadsheet.get("properties", {})
+    lines = [
+        f"Spreadsheet '{props.get('title', '')}' ({spreadsheet_id})",
+        f"  Locale: {props.get('locale', '?')}  Timezone: {props.get('timeZone', '?')}",
+        "  Tabs:",
+    ]
+    for sheet in spreadsheet.get("sheets", []):
+        sp = sheet.get("properties", {})
+        grid = sp.get("gridProperties", {})
+        lines.append(
+            f"    [{sp.get('index', '?')}] '{sp.get('title', '')}' "
+            f"(sheetId {sp.get('sheetId', '?')}, "
+            f"{grid.get('rowCount', '?')} rows x {grid.get('columnCount', '?')} cols)"
+        )
+    return "\n".join(lines)
+
+
+async def read_format(
+    service,
+    spreadsheet_id: str,
+    range_name: Optional[str] = None,
+) -> str:
+    """Show number formats and text styling in range_name (compact)."""
+    _require(range_name, "range_name", "read_format")
+    response = await asyncio.to_thread(
+        service.spreadsheets()
+        .get(
+            spreadsheetId=spreadsheet_id,
+            ranges=[range_name],
+            includeGridData=True,
+            fields="sheets(data(startRow,startColumn,rowData(values(userEnteredFormat(numberFormat,textFormat),formattedValue))))",
+        )
+        .execute
+    )
+    lines = [f"Formats in '{range_name}' of spreadsheet {spreadsheet_id}:"]
+    seen = 0
+    for sheet in response.get("sheets", []):
+        for grid_data in sheet.get("data", []):
+            start_row = grid_data.get("startRow", 0)
+            start_col = grid_data.get("startColumn", 0)
+            for r, row in enumerate(grid_data.get("rowData", []) or []):
+                for c, cell in enumerate(row.get("values", []) or []):
+                    fmt = cell.get("userEnteredFormat", {})
+                    nf = fmt.get("numberFormat")
+                    tf = fmt.get("textFormat", {})
+                    parts = []
+                    if nf:
+                        desc = nf.get("type", "")
+                        if nf.get("pattern"):
+                            desc += f" ({nf['pattern']})"
+                        parts.append(f"number: {desc}")
+                    styles = [
+                        k
+                        for k in ("bold", "italic", "strikethrough", "underline")
+                        if tf.get(k)
+                    ]
+                    if styles:
+                        parts.append(f"text: {', '.join(styles)}")
+                    if parts:
+                        seen += 1
+                        if seen <= 50:
+                            lines.append(
+                                f"  R{start_row + r + 1}C{start_col + c + 1} "
+                                f"'{cell.get('formattedValue', '')}' — {'; '.join(parts)}"
+                            )
+    if seen == 0:
+        lines.append("  (no explicit formatting)")
+    elif seen > 50:
+        lines.append(f"  ... {seen - 50} more cells with formatting")
+    return "\n".join(lines)
+
+
+async def export_csv(
+    service,
+    spreadsheet_id: str,
+    range_name: Optional[str] = None,
+) -> str:
+    """Export range_name (or the first sheet) as CSV text."""
+    target = range_name
+    if not target:
+        sheets = await _get_sheet_properties(service, spreadsheet_id)
+        if not sheets:
+            raise UserInputError("No sheets found in spreadsheet.")
+        target = sheets[0].get("properties", {}).get("title", "Sheet1")
+    result = await asyncio.to_thread(
+        service.spreadsheets()
+        .values()
+        .get(spreadsheetId=spreadsheet_id, range=target)
+        .execute
+    )
+    values = result.get("values", [])
+    if not values:
+        return f"Range '{target}' in spreadsheet {spreadsheet_id} is empty."
+
+    import csv
+    import io
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerows(values)
+    return buffer.getvalue()
+
+
+async def datasource_describe(service, spreadsheet_id: str) -> str:
+    """List Connected Sheets data sources (BigQuery etc.)."""
+    spreadsheet = await asyncio.to_thread(
+        service.spreadsheets()
+        .get(
+            spreadsheetId=spreadsheet_id,
+            fields="dataSources(dataSourceId,type,spec)",
+        )
+        .execute
+    )
+    sources = spreadsheet.get("dataSources", []) or []
+    if not sources:
+        return f"Spreadsheet {spreadsheet_id} has no connected data sources."
+    lines = [f"Data sources in spreadsheet {spreadsheet_id}:"]
+    for ds in sources:
+        spec = ds.get("spec", {})
+        detail = spec.get("bigQuery", {})
+        project = detail.get("projectId", "")
+        table = detail.get("tableSpec", {})
+        ref = ""
+        if table:
+            ref = f" ({project}:{table.get('datasetId', '?')}.{table.get('tableId', '?')})"
+        elif detail.get("querySpec"):
+            ref = f" ({project}: custom query)"
+        lines.append(f"- {ds.get('dataSourceId', '?')} [{ds.get('type', '?')}]{ref}")
+    return "\n".join(lines)
+
+
+async def datasource_table_describe(
+    service,
+    spreadsheet_id: str,
+    range_name: Optional[str] = None,
+) -> str:
+    """Describe the data source backing the range/sheet, if any."""
+    target = range_name
+    if not target:
+        sheets = await _get_sheet_properties(service, spreadsheet_id)
+        if not sheets:
+            raise UserInputError("No sheets found in spreadsheet.")
+        target = sheets[0].get("properties", {}).get("title", "Sheet1")
+    response = await asyncio.to_thread(
+        service.spreadsheets()
+        .get(
+            spreadsheetId=spreadsheet_id,
+            ranges=[target],
+            includeGridData=False,
+            fields="sheets(properties(title),dataSourceTables(dataSourceId,columnSelectionType,columns,syncState),tables)",
+        )
+        .execute
+    )
+    lines = [f"Data source tables in '{target}' of spreadsheet {spreadsheet_id}:"]
+    found = False
+    for sheet in response.get("sheets", []):
+        for dst in sheet.get("dataSourceTables", []) or []:
+            found = True
+            lines.append(
+                f"- dataSourceId {dst.get('dataSourceId', '?')}, "
+                f"sync state: {dst.get('syncState', '?')}, "
+                f"columns selected: {len(dst.get('columns', []) or [])}"
+            )
+    if not found:
+        lines.append("  (none — this range is not backed by a connected data source)")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Destructive: range_clear
+# ---------------------------------------------------------------------------
+
+
+async def range_clear(
+    service,
+    spreadsheet_id: str,
+    range_name: Optional[str] = None,
+) -> str:
+    """Clear all values in range_name. Data-destructive. Formatting is kept."""
+    _require(range_name, "range_name", "range_clear")
+    result = await asyncio.to_thread(
+        service.spreadsheets()
+        .values()
+        .clear(spreadsheetId=spreadsheet_id, range=range_name, body={})
+        .execute
+    )
+    cleared = result.get("clearedRange", range_name)
+    return (
+        f"Cleared values in '{cleared}' of spreadsheet {spreadsheet_id}. "
+        "Formatting was kept."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Escape hatch: batch_update
+# ---------------------------------------------------------------------------
+
+
+async def batch_update(
+    service,
+    spreadsheet_id: str,
+    requests: Optional[Union[str, List[dict]]] = None,
+) -> str:
+    """Raw spreadsheets.batchUpdate passthrough. Escape hatch for operations
+    without a dedicated action; requests is a list (or JSON list) of Sheets
+    API request objects."""
+    if requests is None:
+        raise UserInputError("'requests' is required for the 'batch_update' action.")
+    if isinstance(requests, str):
+        try:
+            requests = json.loads(requests)
+        except json.JSONDecodeError as exc:
+            raise UserInputError(
+                "requests must be a list or a JSON-encoded list of request objects."
+            ) from exc
+    if not isinstance(requests, list) or not requests:
+        raise UserInputError("requests must be a non-empty list of request objects.")
+    for idx, req in enumerate(requests):
+        if not isinstance(req, dict) or len(req) != 1:
+            raise UserInputError(
+                f"requests[{idx}] must be an object with exactly one request type key."
+            )
+    response = await _batch_update(service, spreadsheet_id, requests)
+    replies = response.get("replies", []) or []
+    return (
+        f"Applied {len(requests)} request(s) to spreadsheet {spreadsheet_id} "
+        f"({len(replies)} replie(s) returned)."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Absorbed existing tools family: format_range / conditional_format /
 # resize_dimensions / move_rows
 #

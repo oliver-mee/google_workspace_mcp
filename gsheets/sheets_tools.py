@@ -2482,6 +2482,12 @@ SHEETS_READ_ACTIONS = (
     "banding_list",
     "validation_get",
     "links_get",
+    "metadata",
+    "read_format",
+    "get",
+    "export",
+    "datasource_describe",
+    "datasource_table_describe",
 )
 
 SHEETS_MANAGE_ACTIONS = (
@@ -2510,11 +2516,13 @@ SHEETS_MANAGE_ACTIONS = (
     "note_set",
     "filter_set",
     "links_set",
+    "batch_update",
 )
 
 SHEETS_DELETE_ACTIONS = (
     "table_clear",
     "table_delete",
+    "range_clear",
     "delete_dimension",
     "delete_tab",
 )
@@ -2544,6 +2552,12 @@ async def sheets_read(
         "banding_list",
         "validation_get",
         "links_get",
+        "metadata",
+        "read_format",
+        "get",
+        "export",
+        "datasource_describe",
+        "datasource_table_describe",
     ],
     sheet_name: Optional[str] = None,
     range_name: Optional[str] = None,
@@ -2565,6 +2579,13 @@ async def sheets_read(
       - banding_list: list banded ranges and their IDs.
       - validation_get: show data validation rules in range_name.
       - links_get: list hyperlinks in range_name.
+      - metadata: spreadsheet summary (title, locale, timezone, tabs).
+      - read_format: number formats and text styling in range_name.
+      - get: alias of metadata (spreadsheet summary).
+      - export: range_name (or first sheet) as CSV text.
+      - datasource_describe: list Connected Sheets data sources.
+      - datasource_table_describe: describe the data source behind
+        range_name (or the first sheet), if any.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
@@ -2616,6 +2637,30 @@ async def sheets_read(
             spreadsheet_id,
             range_name=range_name or extra.get("range_name"),
         )
+    elif action == "metadata":
+        return await dispatch.sheets_get_metadata(service, spreadsheet_id)
+    elif action == "read_format":
+        return await dispatch.read_format(
+            service,
+            spreadsheet_id,
+            range_name=range_name or extra.get("range_name"),
+        )
+    elif action == "get":
+        return await dispatch.sheets_get_metadata(service, spreadsheet_id)
+    elif action == "export":
+        return await dispatch.export_csv(
+            service,
+            spreadsheet_id,
+            range_name=range_name or extra.get("range_name"),
+        )
+    elif action == "datasource_describe":
+        return await dispatch.datasource_describe(service, spreadsheet_id)
+    elif action == "datasource_table_describe":
+        return await dispatch.datasource_table_describe(
+            service,
+            spreadsheet_id,
+            range_name=range_name or extra.get("range_name"),
+        )
     return f"Unknown action '{action}'. Valid: {', '.join(SHEETS_READ_ACTIONS)}"
 
 
@@ -2660,6 +2705,7 @@ async def sheets_manage(
         "note_set",
         "filter_set",
         "links_set",
+        "batch_update",
     ],
     sheet_name: Optional[str] = None,
     range_name: Optional[str] = None,
@@ -2761,6 +2807,9 @@ async def sheets_manage(
         params.clear=true + sheet_name.
       - links_set: write a hyperlink into range_name as a HYPERLINK
         formula. params: url (required), label.
+      - batch_update: raw spreadsheets.batchUpdate passthrough (escape
+        hatch). params.requests is a list (or JSON list) of Sheets API
+        request objects, each with exactly one request-type key.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
@@ -3013,6 +3062,10 @@ async def sheets_manage(
             url=extra.get("url"),
             label=extra.get("label"),
         )
+    elif action == "batch_update":
+        return await dispatch.batch_update(
+            service, spreadsheet_id, requests=extra.get("requests")
+        )
     return f"Unknown action '{action}'. Valid: {', '.join(SHEETS_MANAGE_ACTIONS)}"
 
 
@@ -3034,6 +3087,7 @@ async def sheets_delete(
     action: Literal[
         "table_clear",
         "table_delete",
+        "range_clear",
         "delete_dimension",
         "delete_tab",
     ],
@@ -3059,6 +3113,7 @@ async def sheets_delete(
         the first sheet). Exactly one of params.delete_rows (list of 1-based
         row numbers), params.delete_row_range ("5:10") or
         params.delete_columns (list of column letters) is required.
+      - range_clear: clear all values in range_name (formatting is kept).
       - delete_tab: delete tab sheet_name and all its contents. Refused when
         it is the spreadsheet's only tab.
 
@@ -3103,6 +3158,12 @@ async def sheets_delete(
             delete_rows=extra.get("delete_rows"),
             delete_row_range=extra.get("delete_row_range"),
             delete_columns=extra.get("delete_columns"),
+        )
+    elif action == "range_clear":
+        return await dispatch.range_clear(
+            service,
+            spreadsheet_id,
+            range_name=range_name or extra.get("range_name"),
         )
     elif action == "delete_tab":
         return await dispatch.delete_tab(
