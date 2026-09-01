@@ -2475,11 +2475,18 @@ from gsheets import sheets_dispatch_helpers as dispatch  # noqa: E402
 
 SHEETS_READ_ACTIONS = ("table_get",)
 
-SHEETS_MANAGE_ACTIONS = ("table_create",)
+SHEETS_MANAGE_ACTIONS = (
+    "table_create",
+    "format_range",
+    "conditional_format",
+    "resize_dimensions",
+    "move_rows",
+)
 
 SHEETS_DELETE_ACTIONS = (
     "table_clear",
     "table_delete",
+    "delete_dimension",
 )
 
 
@@ -2555,7 +2562,13 @@ async def sheets_manage(
     service,
     user_google_email: str,
     spreadsheet_id: str,
-    action: Literal["table_create",],
+    action: Literal[
+        "table_create",
+        "format_range",
+        "conditional_format",
+        "resize_dimensions",
+        "move_rows",
+    ],
     sheet_name: Optional[str] = None,
     range_name: Optional[str] = None,
     table_id: Optional[str] = None,
@@ -2565,6 +2578,7 @@ async def sheets_manage(
     footer_color: Optional[str] = None,
     first_band_color: Optional[str] = None,
     second_band_color: Optional[str] = None,
+    destination_sheet: Optional[str] = None,
     params: Optional[Union[dict, str]] = None,
 ) -> str:
     """
@@ -2580,6 +2594,38 @@ async def sheets_manage(
         "values"?}; valid types: DOUBLE, CURRENCY, PERCENT, DATE, TIME,
         DATE_TIME, TEXT, BOOLEAN, DROPDOWN (values required), FILES_CHIP,
         PEOPLE_CHIP, FINANCE_CHIP, PLACE_CHIP, RATINGS_CHIP. Colors are hex.
+      - format_range: apply formatting to range_name. params fields:
+        background_color, text_color (hex), number_format_type (NUMBER,
+        NUMBER_WITH_GROUPING, CURRENCY, PERCENT, SCIENTIFIC, DATE, TIME,
+        DATE_TIME, TEXT), number_format_pattern, wrap_strategy (WRAP, CLIP,
+        OVERFLOW_CELL), horizontal_alignment (LEFT, CENTER, RIGHT),
+        vertical_alignment (TOP, MIDDLE, BOTTOM), bold, italic (bool),
+        font_size (int). At least one is required.
+      - conditional_format: add or delete a conditional formatting rule.
+        params fields: operation ("add_rule" or "delete_rule", required),
+        condition_type (Sheets condition type, e.g. NUMBER_GREATER,
+        TEXT_CONTAINS, CUSTOM_FORMULA), condition_values (list or JSON list),
+        background_color, text_color (hex), gradient_points (list or JSON
+        list of 2-3 {"type": MIN|MAX|NUMBER|PERCENT|PERCENTILE, "color",
+        "value"?}; if provided, a gradient rule is created and boolean
+        parameters are ignored), rule_index (0-based; optional insertion
+        position for add_rule, required for delete_rule), sheet_name (tab to
+        locate the rule for delete_rule; defaults to the first sheet). Rule
+        listing stays on the standalone manage_conditional_formatting tool.
+      - resize_dimensions: resize/auto-resize columns and rows, freeze,
+        hide/unhide, and insert rows/columns on sheet_name (defaults
+        to the first sheet). params fields: column_sizes ({"A": 200}),
+        row_sizes ({"1": 40}; 1-based row numbers), auto_resize_columns
+        (["A", "B"]), auto_resize_rows ([1, 2]), frozen_row_count,
+        frozen_column_count (0 unfreezes), hide_columns, unhide_columns,
+        hide_rows, unhide_rows, insert_rows, insert_rows_at (1-based),
+        insert_columns, insert_columns_at (column letter). All list/dict
+        fields accept JSON strings. At least one is required. Deleting
+        rows/columns is data-destructive: use sheets_delete delete_dimension.
+      - move_rows: move rows start_row..end_row (1-based, inclusive) from
+        sheet_name (or params.source_sheet) to destination_sheet. params
+        fields: source_sheet, start_row, end_row (int). Rows are appended
+        below the destination's data; formatting and formulas are preserved.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
@@ -2594,6 +2640,7 @@ async def sheets_manage(
         footer_color (str): Hex color for the table footer row.
         first_band_color (str): Hex color for odd banded rows.
         second_band_color (str): Hex color for even banded rows.
+        destination_sheet (str): Destination tab for move_rows.
         params (dict): Action-specific fields for actions that take more than
             the named parameters above; see the per-action docs.
 
@@ -2618,6 +2665,65 @@ async def sheets_manage(
             first_band_color=first_band_color or extra.get("first_band_color"),
             second_band_color=second_band_color or extra.get("second_band_color"),
         )
+    elif action == "format_range":
+        return await dispatch.format_range(
+            service,
+            spreadsheet_id,
+            range_name=range_name or extra.get("range_name"),
+            background_color=extra.get("background_color"),
+            text_color=extra.get("text_color"),
+            number_format_type=extra.get("number_format_type"),
+            number_format_pattern=extra.get("number_format_pattern"),
+            wrap_strategy=extra.get("wrap_strategy"),
+            horizontal_alignment=extra.get("horizontal_alignment"),
+            vertical_alignment=extra.get("vertical_alignment"),
+            bold=extra.get("bold"),
+            italic=extra.get("italic"),
+            font_size=extra.get("font_size"),
+        )
+    elif action == "conditional_format":
+        return await dispatch.conditional_format(
+            service,
+            spreadsheet_id,
+            operation=extra.get("operation"),
+            range_name=range_name or extra.get("range_name"),
+            condition_type=extra.get("condition_type"),
+            condition_values=extra.get("condition_values"),
+            background_color=extra.get("background_color"),
+            text_color=extra.get("text_color"),
+            rule_index=extra.get("rule_index"),
+            gradient_points=extra.get("gradient_points"),
+            sheet_name=sheet_name or extra.get("sheet_name"),
+        )
+    elif action == "resize_dimensions":
+        return await dispatch.resize_dimensions(
+            service,
+            spreadsheet_id,
+            sheet_name=sheet_name or extra.get("sheet_name"),
+            column_sizes=extra.get("column_sizes"),
+            row_sizes=extra.get("row_sizes"),
+            auto_resize_columns=extra.get("auto_resize_columns"),
+            auto_resize_rows=extra.get("auto_resize_rows"),
+            frozen_row_count=extra.get("frozen_row_count"),
+            frozen_column_count=extra.get("frozen_column_count"),
+            hide_columns=extra.get("hide_columns"),
+            unhide_columns=extra.get("unhide_columns"),
+            hide_rows=extra.get("hide_rows"),
+            unhide_rows=extra.get("unhide_rows"),
+            insert_rows=extra.get("insert_rows"),
+            insert_rows_at=extra.get("insert_rows_at"),
+            insert_columns=extra.get("insert_columns"),
+            insert_columns_at=extra.get("insert_columns_at"),
+        )
+    elif action == "move_rows":
+        return await dispatch.move_rows(
+            service,
+            spreadsheet_id,
+            source_sheet=extra.get("source_sheet") or sheet_name,
+            start_row=extra.get("start_row"),
+            end_row=extra.get("end_row"),
+            destination_sheet=destination_sheet or extra.get("destination_sheet"),
+        )
     return f"Unknown action '{action}'. Valid: {', '.join(SHEETS_MANAGE_ACTIONS)}"
 
 
@@ -2639,6 +2745,7 @@ async def sheets_delete(
     action: Literal[
         "table_clear",
         "table_delete",
+        "delete_dimension",
     ],
     sheet_name: Optional[str] = None,
     range_name: Optional[str] = None,
@@ -2658,6 +2765,10 @@ async def sheets_delete(
         and its header row. Identify with table_id or table_name.
       - table_delete: delete a native table by id (cell values are left in
         place). Identify with table_id or table_name.
+      - delete_dimension: delete rows or columns from sheet_name (defaults to
+        the first sheet). Exactly one of params.delete_rows (list of 1-based
+        row numbers), params.delete_row_range ("5:10") or
+        params.delete_columns (list of column letters) is required.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
@@ -2676,7 +2787,7 @@ async def sheets_delete(
         f"[sheets_delete] Email: '{user_google_email}', action: '{action}', "
         f"spreadsheet: {spreadsheet_id}"
     )
-    dispatch._normalize_params(params)  # validates early; used by later families
+    extra = dispatch._normalize_params(params)
 
     if is_action_denied("sheets", action):
         raise UserInputError(
@@ -2691,5 +2802,14 @@ async def sheets_delete(
     elif action == "table_delete":
         return await dispatch.table_delete(
             service, spreadsheet_id, table_id=table_id, table_name=table_name
+        )
+    elif action == "delete_dimension":
+        return await dispatch.delete_dimension(
+            service,
+            spreadsheet_id,
+            sheet_name=sheet_name or extra.get("sheet_name"),
+            delete_rows=extra.get("delete_rows"),
+            delete_row_range=extra.get("delete_row_range"),
+            delete_columns=extra.get("delete_columns"),
         )
     return f"Unknown action '{action}'. Valid: {', '.join(SHEETS_DELETE_ACTIONS)}"

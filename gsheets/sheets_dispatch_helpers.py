@@ -11,15 +11,25 @@ human-readable confirmation string.
 """
 
 import asyncio
+import copy
 import json
 import logging
 from typing import List, Optional, Union
 
 from core.utils import UserInputError
 from gsheets.sheets_helpers import (
+    _build_boolean_rule,
+    _build_gradient_rule,
     _build_table_rows_properties,
+    _column_to_index,
+    _fetch_sheets_with_rules,
+    _format_conditional_rules_section,
     _parse_a1_range,
+    _parse_condition_values,
+    _parse_gradient_points,
+    _parse_hex_color,
     _parse_table_column_properties,
+    _select_sheet,
 )
 
 logger = logging.getLogger(__name__)
@@ -280,4 +290,1072 @@ async def table_delete(
     return (
         f"Deleted table '{table.get('name', '')}' (ID: {table['tableId']}) "
         f"from spreadsheet {spreadsheet_id}. Cell values were left in place."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Absorbed existing tools family: format_range / conditional_format /
+# resize_dimensions / move_rows
+#
+# These mirror the standalone tools format_sheet_range,
+# manage_conditional_formatting (add/delete only), resize_sheet_dimensions,
+# and move_sheet_rows in gsheets/sheets_tools.py. For equivalent inputs they
+# produce the same Sheets API requests; the standalone tools remain live.
+# ---------------------------------------------------------------------------
+
+
+async def format_range(
+    service,
+    spreadsheet_id: str,
+    range_name: Optional[str] = None,
+    background_color: Optional[str] = None,
+    text_color: Optional[str] = None,
+    number_format_type: Optional[str] = None,
+    number_format_pattern: Optional[str] = None,
+    wrap_strategy: Optional[str] = None,
+    horizontal_alignment: Optional[str] = None,
+    vertical_alignment: Optional[str] = None,
+    bold: Optional[bool] = None,
+    italic: Optional[bool] = None,
+    font_size: Optional[int] = None,
+) -> str:
+    """Apply formatting to range_name: colors, number formats, wrapping,
+    alignment, and text styling. Mirrors format_sheet_range."""
+    _require(range_name, "range_name", "format_range")
+    assert range_name is not None  # narrowed by _require
+
+    has_any_format = any(
+        [
+            background_color,
+            text_color,
+            number_format_type,
+            wrap_strategy,
+            horizontal_alignment,
+            vertical_alignment,
+            bold is not None,
+            italic is not None,
+            font_size is not None,
+        ]
+    )
+    if not has_any_format:
+        raise UserInputError(
+            "Provide at least one formatting option (background_color, text_color, "
+            "number_format_type, wrap_strategy, horizontal_alignment, vertical_alignment, "
+            "bold, italic, or font_size)."
+        )
+
+    bg_color_parsed = _parse_hex_color(background_color)
+    text_color_parsed = _parse_hex_color(text_color)
+
+    number_format = None
+    if number_format_type:
+        allowed_number_formats = {
+            "NUMBER",
+            "NUMBER_WITH_GROUPING",
+            "CURRENCY",
+            "PERCENT",
+            "SCIENTIFIC",
+            "DATE",
+            "TIME",
+            "DATE_TIME",
+            "TEXT",
+        }
+        normalized_type = number_format_type.upper()
+        if normalized_type not in allowed_number_formats:
+            raise UserInputError(
+                f"number_format_type must be one of {sorted(allowed_number_formats)}."
+            )
+        number_format = {"type": normalized_type}
+        if number_format_pattern:
+            number_format["pattern"] = number_format_pattern
+
+    wrap_strategy_normalized = None
+    if wrap_strategy:
+        allowed_wrap_strategies = {"WRAP", "CLIP", "OVERFLOW_CELL"}
+        wrap_strategy_normalized = wrap_strategy.upper()
+        if wrap_strategy_normalized not in allowed_wrap_strategies:
+            raise UserInputError(
+                f"wrap_strategy must be one of {sorted(allowed_wrap_strategies)}."
+            )
+
+    h_align_normalized = None
+    if horizontal_alignment:
+        allowed_h_alignments = {"LEFT", "CENTER", "RIGHT"}
+        h_align_normalized = horizontal_alignment.upper()
+        if h_align_normalized not in allowed_h_alignments:
+            raise UserInputError(
+                f"horizontal_alignment must be one of {sorted(allowed_h_alignments)}."
+            )
+
+    v_align_normalized = None
+    if vertical_alignment:
+        allowed_v_alignments = {"TOP", "MIDDLE", "BOTTOM"}
+        v_align_normalized = vertical_alignment.upper()
+        if v_align_normalized not in allowed_v_alignments:
+            raise UserInputError(
+                f"vertical_alignment must be one of {sorted(allowed_v_alignments)}."
+            )
+
+    sheets = await _get_sheet_properties(service, spreadsheet_id)
+    grid_range = _parse_a1_range(range_name, sheets)
+
+    user_entered_format = {}
+    fields = []
+
+    if bg_color_parsed:
+        user_entered_format["backgroundColor"] = bg_color_parsed
+        fields.append("userEnteredFormat.backgroundColor")
+
+    text_format = {}
+    text_format_fields = []
+    if text_color_parsed:
+        text_format["foregroundColor"] = text_color_parsed
+        text_format_fields.append("userEnteredFormat.textFormat.foregroundColor")
+    if bold is not None:
+        text_format["bold"] = bold
+        text_format_fields.append("userEnteredFormat.textFormat.bold")
+    if italic is not None:
+        text_format["italic"] = italic
+        text_format_fields.append("userEnteredFormat.textFormat.italic")
+    if font_size is not None:
+        text_format["fontSize"] = font_size
+        text_format_fields.append("userEnteredFormat.textFormat.fontSize")
+    if text_format:
+        user_entered_format["textFormat"] = text_format
+        fields.extend(text_format_fields)
+
+    if number_format:
+        user_entered_format["numberFormat"] = number_format
+        fields.append("userEnteredFormat.numberFormat")
+    if wrap_strategy_normalized:
+        user_entered_format["wrapStrategy"] = wrap_strategy_normalized
+        fields.append("userEnteredFormat.wrapStrategy")
+    if h_align_normalized:
+        user_entered_format["horizontalAlignment"] = h_align_normalized
+        fields.append("userEnteredFormat.horizontalAlignment")
+    if v_align_normalized:
+        user_entered_format["verticalAlignment"] = v_align_normalized
+        fields.append("userEnteredFormat.verticalAlignment")
+
+    if not user_entered_format:
+        raise UserInputError(
+            "No formatting applied. Verify provided formatting options."
+        )
+
+    await _batch_update(
+        service,
+        spreadsheet_id,
+        [
+            {
+                "repeatCell": {
+                    "range": grid_range,
+                    "cell": {"userEnteredFormat": user_entered_format},
+                    "fields": ",".join(fields),
+                }
+            }
+        ],
+    )
+
+    applied_parts = []
+    if bg_color_parsed:
+        applied_parts.append(f"background {background_color}")
+    if text_color_parsed:
+        applied_parts.append(f"text color {text_color}")
+    if number_format:
+        nf_desc = number_format["type"]
+        if number_format_pattern:
+            nf_desc += f" (pattern: {number_format_pattern})"
+        applied_parts.append(f"number format {nf_desc}")
+    if wrap_strategy_normalized:
+        applied_parts.append(f"wrap {wrap_strategy_normalized}")
+    if h_align_normalized:
+        applied_parts.append(f"horizontal align {h_align_normalized}")
+    if v_align_normalized:
+        applied_parts.append(f"vertical align {v_align_normalized}")
+    if bold is not None:
+        applied_parts.append("bold" if bold else "not bold")
+    if italic is not None:
+        applied_parts.append("italic" if italic else "not italic")
+    if font_size is not None:
+        applied_parts.append(f"font size {font_size}")
+
+    return (
+        f"Applied formatting to range '{range_name}' in spreadsheet "
+        f"{spreadsheet_id}: {', '.join(applied_parts)}."
+    )
+
+
+async def conditional_format(
+    service,
+    spreadsheet_id: str,
+    operation: Optional[str] = None,
+    range_name: Optional[str] = None,
+    condition_type: Optional[str] = None,
+    condition_values: Optional[Union[str, List[Union[str, int, float]]]] = None,
+    background_color: Optional[str] = None,
+    text_color: Optional[str] = None,
+    rule_index: Optional[int] = None,
+    gradient_points: Optional[Union[str, List[dict]]] = None,
+    sheet_name: Optional[str] = None,
+) -> str:
+    """Add or delete a conditional formatting rule. Mirrors the 'add' and
+    'delete' operations of manage_conditional_formatting (rule listing stays
+    on the standalone tool)."""
+    _require(
+        operation,
+        "operation",
+        "conditional_format",
+        "Use 'add_rule' or 'delete_rule'.",
+    )
+    assert operation is not None  # narrowed by _require
+    operation_normalized = operation.strip().lower()
+    allowed_operations = {"add_rule", "delete_rule"}
+    if operation_normalized not in allowed_operations:
+        raise UserInputError(
+            f"operation must be one of {sorted(allowed_operations)}, got '{operation}'."
+        )
+
+    if operation_normalized == "add_rule":
+        if not range_name:
+            raise UserInputError("range_name is required for operation 'add_rule'.")
+        if not condition_type and not gradient_points:
+            raise UserInputError(
+                "condition_type (or gradient_points) is required for operation 'add_rule'."
+            )
+        if rule_index is not None and (
+            not isinstance(rule_index, int) or rule_index < 0
+        ):
+            raise UserInputError(
+                "rule_index must be a non-negative integer when provided."
+            )
+
+        gradient_points_list = _parse_gradient_points(gradient_points)
+        condition_values_list = (
+            None if gradient_points_list else _parse_condition_values(condition_values)
+        )
+
+        sheets, sheet_titles = await _fetch_sheets_with_rules(service, spreadsheet_id)
+        grid_range = _parse_a1_range(range_name, sheets)
+
+        target_sheet = None
+        for sheet in sheets:
+            if sheet.get("properties", {}).get("sheetId") == grid_range.get("sheetId"):
+                target_sheet = sheet
+                break
+        if target_sheet is None:
+            raise UserInputError(
+                "Target sheet not found while adding conditional formatting."
+            )
+
+        current_rules = target_sheet.get("conditionalFormats", []) or []
+
+        insert_at = rule_index if rule_index is not None else len(current_rules)
+        if insert_at > len(current_rules):
+            raise UserInputError(
+                f"rule_index {insert_at} is out of range for sheet "
+                f"'{target_sheet.get('properties', {}).get('title', 'Unknown')}' "
+                f"(current count: {len(current_rules)})."
+            )
+
+        if gradient_points_list:
+            new_rule = _build_gradient_rule([grid_range], gradient_points_list)
+            rule_desc = "gradient"
+            values_desc = ""
+            applied_parts = [f"gradient points {len(gradient_points_list)}"]
+        else:
+            assert condition_type is not None  # guaranteed by the check above
+            rule, cond_type_normalized = _build_boolean_rule(
+                [grid_range],
+                condition_type,
+                condition_values_list,
+                background_color,
+                text_color,
+            )
+            new_rule = rule
+            rule_desc = cond_type_normalized
+            values_desc = ""
+            if condition_values_list:
+                values_desc = f" with values {condition_values_list}"
+            applied_parts = []
+            if background_color:
+                applied_parts.append(f"background {background_color}")
+            if text_color:
+                applied_parts.append(f"text {text_color}")
+
+        new_rules_state = copy.deepcopy(current_rules)
+        new_rules_state.insert(insert_at, new_rule)
+
+        add_rule_request: dict = {"rule": new_rule}
+        if rule_index is not None:
+            add_rule_request["index"] = rule_index
+
+        await _batch_update(
+            service,
+            spreadsheet_id,
+            [{"addConditionalFormatRule": add_rule_request}],
+        )
+
+        format_desc = ", ".join(applied_parts) if applied_parts else "format applied"
+        sheet_title = target_sheet.get("properties", {}).get("title", "Unknown")
+        state_text = _format_conditional_rules_section(
+            sheet_title, new_rules_state, sheet_titles, indent=""
+        )
+
+        return "\n".join(
+            [
+                f"Added conditional format on '{range_name}' in spreadsheet "
+                f"{spreadsheet_id}: "
+                f"{rule_desc}{values_desc}; format: {format_desc}.",
+                state_text,
+            ]
+        )
+
+    # operation_normalized == "delete_rule"
+    if rule_index is None:
+        raise UserInputError("rule_index is required for operation 'delete_rule'.")
+    if not isinstance(rule_index, int) or rule_index < 0:
+        raise UserInputError("rule_index must be a non-negative integer.")
+
+    sheets, sheet_titles = await _fetch_sheets_with_rules(service, spreadsheet_id)
+    target_sheet = _select_sheet(sheets, sheet_name)
+
+    sheet_props = target_sheet.get("properties", {})
+    sheet_id = sheet_props.get("sheetId")
+    target_sheet_name = sheet_props.get("title", f"Sheet {sheet_id}")
+    rules = target_sheet.get("conditionalFormats", []) or []
+    if rule_index >= len(rules):
+        raise UserInputError(
+            f"rule_index {rule_index} is out of range for sheet "
+            f"'{target_sheet_name}' (current count: {len(rules)})."
+        )
+
+    new_rules_state = copy.deepcopy(rules)
+    del new_rules_state[rule_index]
+
+    await _batch_update(
+        service,
+        spreadsheet_id,
+        [
+            {
+                "deleteConditionalFormatRule": {
+                    "index": rule_index,
+                    "sheetId": sheet_id,
+                }
+            }
+        ],
+    )
+
+    state_text = _format_conditional_rules_section(
+        target_sheet_name, new_rules_state, sheet_titles, indent=""
+    )
+
+    return "\n".join(
+        [
+            f"Deleted conditional format at index {rule_index} on sheet "
+            f"'{target_sheet_name}' in spreadsheet {spreadsheet_id}.",
+            state_text,
+        ]
+    )
+
+
+def _build_column_visibility_requests(sheet_id, letters, hidden, label):
+    """Build updateDimensionProperties requests to hide/unhide columns."""
+    if not isinstance(letters, list):
+        raise UserInputError(f"{label} must be a list of column letters.")
+    reqs = []
+    for col_letter in letters:
+        col_idx = _column_to_index(str(col_letter).upper())
+        if col_idx is None:
+            raise UserInputError(f"Invalid column letter in {label}: '{col_letter}'.")
+        reqs.append(
+            {
+                "updateDimensionProperties": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "dimension": "COLUMNS",
+                        "startIndex": col_idx,
+                        "endIndex": col_idx + 1,
+                    },
+                    "properties": {"hiddenByUser": hidden},
+                    "fields": "hiddenByUser",
+                }
+            }
+        )
+    return reqs
+
+
+def _build_row_visibility_requests(sheet_id, row_nums, hidden, label):
+    """Build updateDimensionProperties requests to hide/unhide rows."""
+    if not isinstance(row_nums, list):
+        raise UserInputError(f"{label} must be a list of row numbers.")
+    reqs = []
+    for row_num in row_nums:
+        try:
+            row_num = int(row_num)
+        except ValueError as exc:
+            raise UserInputError(
+                f"Row number must be an integer in {label}, got {row_num}."
+            ) from exc
+        if row_num < 1:
+            raise UserInputError(f"Row number must be >= 1 in {label}, got {row_num}.")
+        reqs.append(
+            {
+                "updateDimensionProperties": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "dimension": "ROWS",
+                        "startIndex": row_num - 1,
+                        "endIndex": row_num,
+                    },
+                    "properties": {"hiddenByUser": hidden},
+                    "fields": "hiddenByUser",
+                }
+            }
+        )
+    return reqs
+
+
+async def resize_dimensions(
+    service,
+    spreadsheet_id: str,
+    sheet_name: Optional[str] = None,
+    column_sizes: Optional[Union[str, dict]] = None,
+    row_sizes: Optional[Union[str, dict]] = None,
+    auto_resize_columns: Optional[Union[str, List[str]]] = None,
+    auto_resize_rows: Optional[Union[str, List[int]]] = None,
+    frozen_row_count: Optional[int] = None,
+    frozen_column_count: Optional[int] = None,
+    hide_columns: Optional[Union[str, List[str]]] = None,
+    unhide_columns: Optional[Union[str, List[str]]] = None,
+    hide_rows: Optional[Union[str, List[int]]] = None,
+    unhide_rows: Optional[Union[str, List[int]]] = None,
+    insert_rows: Optional[int] = None,
+    insert_rows_at: Optional[int] = None,
+    insert_columns: Optional[int] = None,
+    insert_columns_at: Optional[str] = None,
+) -> str:
+    """Manage sheet-level dimension properties: resize/auto-resize columns
+    and rows, freeze, hide/unhide, and insert rows/columns. Mirrors
+    resize_sheet_dimensions, minus the delete operations — those are
+    data-destructive and live in the delete_dimension action."""
+    has_any = any(
+        [
+            column_sizes,
+            row_sizes,
+            auto_resize_columns,
+            auto_resize_rows,
+            frozen_row_count is not None,
+            frozen_column_count is not None,
+            hide_columns,
+            unhide_columns,
+            hide_rows,
+            unhide_rows,
+            insert_rows is not None,
+            insert_columns is not None,
+        ]
+    )
+    if not has_any:
+        raise UserInputError(
+            "Provide at least one of: column_sizes, row_sizes, "
+            "auto_resize_columns, auto_resize_rows, frozen_row_count, "
+            "frozen_column_count, hide_columns, unhide_columns, "
+            "hide_rows, unhide_rows, insert_rows, insert_columns."
+        )
+
+    def _parse_json(value, name):
+        if not isinstance(value, str):
+            return value
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError as e:
+            raise UserInputError(f"Invalid JSON for {name}: {e}")
+
+    column_sizes = _parse_json(column_sizes, "column_sizes")
+    row_sizes = _parse_json(row_sizes, "row_sizes")
+    auto_resize_columns = _parse_json(auto_resize_columns, "auto_resize_columns")
+    auto_resize_rows = _parse_json(auto_resize_rows, "auto_resize_rows")
+    hide_columns = _parse_json(hide_columns, "hide_columns")
+    unhide_columns = _parse_json(unhide_columns, "unhide_columns")
+    hide_rows = _parse_json(hide_rows, "hide_rows")
+    unhide_rows = _parse_json(unhide_rows, "unhide_rows")
+
+    sheets = await _get_sheet_properties(service, spreadsheet_id)
+    if not sheets:
+        raise UserInputError("No sheets found in spreadsheet.")
+
+    target_sheet = None
+    if sheet_name:
+        for sheet in sheets:
+            if sheet.get("properties", {}).get("title") == sheet_name:
+                target_sheet = sheet
+                break
+        if not target_sheet:
+            raise UserInputError(f"Sheet '{sheet_name}' not found.")
+    else:
+        target_sheet = sheets[0]
+
+    sheet_id = target_sheet["properties"]["sheetId"]
+
+    requests = []
+    applied_parts = []
+
+    if column_sizes:
+        if not isinstance(column_sizes, dict):
+            raise UserInputError(
+                "column_sizes must be a dict mapping column letters to pixel widths."
+            )
+        for col_letter, pixel_size in column_sizes.items():
+            col_idx = _column_to_index(col_letter.upper())
+            if col_idx is None:
+                raise UserInputError(f"Invalid column letter: '{col_letter}'.")
+            if not isinstance(pixel_size, (int, float)) or pixel_size <= 0:
+                raise UserInputError(
+                    f"Pixel size for column '{col_letter}' must be a positive number."
+                )
+            requests.append(
+                {
+                    "updateDimensionProperties": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "dimension": "COLUMNS",
+                            "startIndex": col_idx,
+                            "endIndex": col_idx + 1,
+                        },
+                        "properties": {"pixelSize": int(pixel_size)},
+                        "fields": "pixelSize",
+                    }
+                }
+            )
+        applied_parts.append(
+            f"resized columns: {', '.join(f'{k}={v}px' for k, v in column_sizes.items())}"
+        )
+
+    if row_sizes:
+        if not isinstance(row_sizes, dict):
+            raise UserInputError(
+                "row_sizes must be a dict mapping row numbers to pixel heights."
+            )
+        for row_num_str, pixel_size in row_sizes.items():
+            try:
+                row_num = int(row_num_str)
+            except ValueError as exc:
+                raise UserInputError(
+                    f"Row number must be an integer >= 1, got {row_num_str}."
+                ) from exc
+            if row_num < 1:
+                raise UserInputError(f"Row number must be >= 1, got {row_num}.")
+            if not isinstance(pixel_size, (int, float)) or pixel_size <= 0:
+                raise UserInputError(
+                    f"Pixel size for row {row_num} must be a positive number."
+                )
+            requests.append(
+                {
+                    "updateDimensionProperties": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "dimension": "ROWS",
+                            "startIndex": row_num - 1,
+                            "endIndex": row_num,
+                        },
+                        "properties": {"pixelSize": int(pixel_size)},
+                        "fields": "pixelSize",
+                    }
+                }
+            )
+        applied_parts.append(
+            f"resized rows: {', '.join(f'{k}={v}px' for k, v in row_sizes.items())}"
+        )
+
+    if auto_resize_columns:
+        if not isinstance(auto_resize_columns, list):
+            raise UserInputError(
+                "auto_resize_columns must be a list of column letters."
+            )
+        for col_letter in auto_resize_columns:
+            col_idx = _column_to_index(str(col_letter).upper())
+            if col_idx is None:
+                raise UserInputError(f"Invalid column letter: '{col_letter}'.")
+            requests.append(
+                {
+                    "autoResizeDimensions": {
+                        "dimensions": {
+                            "sheetId": sheet_id,
+                            "dimension": "COLUMNS",
+                            "startIndex": col_idx,
+                            "endIndex": col_idx + 1,
+                        }
+                    }
+                }
+            )
+        applied_parts.append(
+            f"auto-resized columns: {', '.join(str(c) for c in auto_resize_columns)}"
+        )
+
+    if auto_resize_rows:
+        if not isinstance(auto_resize_rows, list):
+            raise UserInputError("auto_resize_rows must be a list of row numbers.")
+        for row_num in auto_resize_rows:
+            try:
+                parsed_row_num = int(row_num)
+            except ValueError as exc:
+                raise UserInputError(
+                    f"Row number must be an integer >= 1, got {row_num}."
+                ) from exc
+            if parsed_row_num < 1:
+                raise UserInputError(f"Row number must be >= 1, got {parsed_row_num}.")
+            requests.append(
+                {
+                    "autoResizeDimensions": {
+                        "dimensions": {
+                            "sheetId": sheet_id,
+                            "dimension": "ROWS",
+                            "startIndex": parsed_row_num - 1,
+                            "endIndex": parsed_row_num,
+                        }
+                    }
+                }
+            )
+        applied_parts.append(
+            f"auto-resized rows: {', '.join(str(r) for r in auto_resize_rows)}"
+        )
+
+    grid_properties = {}
+    grid_fields = []
+    if frozen_row_count is not None:
+        if not isinstance(frozen_row_count, int) or frozen_row_count < 0:
+            raise UserInputError("frozen_row_count must be a non-negative integer.")
+        grid_properties["frozenRowCount"] = frozen_row_count
+        grid_fields.append("gridProperties.frozenRowCount")
+        applied_parts.append(
+            f"froze {frozen_row_count} row(s)"
+            if frozen_row_count > 0
+            else "unfroze rows"
+        )
+
+    if frozen_column_count is not None:
+        if not isinstance(frozen_column_count, int) or frozen_column_count < 0:
+            raise UserInputError("frozen_column_count must be a non-negative integer.")
+        grid_properties["frozenColumnCount"] = frozen_column_count
+        grid_fields.append("gridProperties.frozenColumnCount")
+        applied_parts.append(
+            f"froze {frozen_column_count} column(s)"
+            if frozen_column_count > 0
+            else "unfroze columns"
+        )
+
+    if grid_properties:
+        requests.append(
+            {
+                "updateSheetProperties": {
+                    "properties": {
+                        "sheetId": sheet_id,
+                        "gridProperties": grid_properties,
+                    },
+                    "fields": ",".join(grid_fields),
+                }
+            }
+        )
+
+    if hide_columns:
+        requests.extend(
+            _build_column_visibility_requests(
+                sheet_id, hide_columns, True, "hide_columns"
+            )
+        )
+        applied_parts.append(f"hid columns: {', '.join(str(c) for c in hide_columns)}")
+
+    if unhide_columns:
+        requests.extend(
+            _build_column_visibility_requests(
+                sheet_id, unhide_columns, False, "unhide_columns"
+            )
+        )
+        applied_parts.append(
+            f"unhid columns: {', '.join(str(c) for c in unhide_columns)}"
+        )
+
+    if hide_rows:
+        requests.extend(
+            _build_row_visibility_requests(sheet_id, hide_rows, True, "hide_rows")
+        )
+        applied_parts.append(f"hid rows: {', '.join(str(r) for r in hide_rows)}")
+
+    if unhide_rows:
+        requests.extend(
+            _build_row_visibility_requests(sheet_id, unhide_rows, False, "unhide_rows")
+        )
+        applied_parts.append(f"unhid rows: {', '.join(str(r) for r in unhide_rows)}")
+
+    if insert_rows is not None:
+        if not isinstance(insert_rows, int) or insert_rows < 1:
+            raise UserInputError("insert_rows must be a positive integer.")
+        if insert_rows_at is not None:
+            if not isinstance(insert_rows_at, int) or insert_rows_at < 1:
+                raise UserInputError(
+                    "insert_rows_at must be a positive integer (1-based)."
+                )
+            start_idx = insert_rows_at - 1
+        else:
+            start_idx = None
+
+        if start_idx is not None:
+            requests.append(
+                {
+                    "insertDimension": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "dimension": "ROWS",
+                            "startIndex": start_idx,
+                            "endIndex": start_idx + insert_rows,
+                        },
+                        "inheritFromBefore": start_idx > 0,
+                    }
+                }
+            )
+            applied_parts.append(
+                f"inserted {insert_rows} row(s) at row {insert_rows_at}"
+            )
+        else:
+            requests.append(
+                {
+                    "appendDimension": {
+                        "sheetId": sheet_id,
+                        "dimension": "ROWS",
+                        "length": insert_rows,
+                    }
+                }
+            )
+            applied_parts.append(f"appended {insert_rows} row(s)")
+
+    if insert_columns is not None:
+        if not isinstance(insert_columns, int) or insert_columns < 1:
+            raise UserInputError("insert_columns must be a positive integer.")
+        if insert_columns_at is not None:
+            col_idx = _column_to_index(str(insert_columns_at).upper())
+            if col_idx is None:
+                raise UserInputError(
+                    f"Invalid column letter for insert_columns_at: '{insert_columns_at}'."
+                )
+            requests.append(
+                {
+                    "insertDimension": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "dimension": "COLUMNS",
+                            "startIndex": col_idx,
+                            "endIndex": col_idx + insert_columns,
+                        },
+                        "inheritFromBefore": col_idx > 0,
+                    }
+                }
+            )
+            applied_parts.append(
+                f"inserted {insert_columns} column(s) at column {insert_columns_at}"
+            )
+        else:
+            requests.append(
+                {
+                    "appendDimension": {
+                        "sheetId": sheet_id,
+                        "dimension": "COLUMNS",
+                        "length": insert_columns,
+                    }
+                }
+            )
+            applied_parts.append(f"appended {insert_columns} column(s)")
+
+    await _batch_update(service, spreadsheet_id, requests)
+
+    return (
+        f"Applied dimension changes in spreadsheet {spreadsheet_id}: "
+        f"{'; '.join(applied_parts)}."
+    )
+
+
+async def delete_dimension(
+    service,
+    spreadsheet_id: str,
+    sheet_name: Optional[str] = None,
+    delete_rows: Optional[Union[str, List[int]]] = None,
+    delete_row_range: Optional[str] = None,
+    delete_columns: Optional[Union[str, List[str]]] = None,
+) -> str:
+    """Delete rows or columns from a sheet. Data-destructive.
+
+    Exactly one of delete_rows (list of 1-based row numbers), delete_row_range
+    ("5:10") or delete_columns (list of column letters) is required.
+    """
+    provided = [bool(delete_rows), bool(delete_row_range), bool(delete_columns)]
+    if sum(provided) != 1:
+        raise UserInputError(
+            "Provide exactly one of: delete_rows, delete_row_range, delete_columns."
+        )
+
+    def _parse_json(value, name):
+        if not isinstance(value, str):
+            return value
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError as e:
+            raise UserInputError(f"Invalid JSON for {name}: {e}")
+
+    delete_rows = _parse_json(delete_rows, "delete_rows")
+    delete_columns = _parse_json(delete_columns, "delete_columns")
+
+    sheets = await _get_sheet_properties(service, spreadsheet_id)
+    if not sheets:
+        raise UserInputError("No sheets found in spreadsheet.")
+
+    target_sheet = None
+    if sheet_name:
+        for sheet in sheets:
+            if sheet.get("properties", {}).get("title") == sheet_name:
+                target_sheet = sheet
+                break
+        if not target_sheet:
+            raise UserInputError(f"Sheet '{sheet_name}' not found.")
+    else:
+        target_sheet = sheets[0]
+
+    sheet_id = target_sheet["properties"]["sheetId"]
+    requests = []
+    applied_parts = []
+
+    if delete_rows:
+        if not isinstance(delete_rows, list):
+            raise UserInputError("delete_rows must be a list of row numbers.")
+        parsed_delete_rows = []
+        for row_num in delete_rows:
+            try:
+                parsed_delete_rows.append(int(row_num))
+            except ValueError as exc:
+                raise UserInputError(
+                    f"Row number must be an integer >= 1 in delete_rows, got {row_num}."
+                ) from exc
+        sorted_rows = sorted(parsed_delete_rows, reverse=True)
+        for row_num in sorted_rows:
+            if row_num < 1:
+                raise UserInputError(
+                    f"Row number must be >= 1 in delete_rows, got {row_num}."
+                )
+            requests.append(
+                {
+                    "deleteDimension": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "dimension": "ROWS",
+                            "startIndex": row_num - 1,
+                            "endIndex": row_num,
+                        }
+                    }
+                }
+            )
+        applied_parts.append(f"deleted rows: {', '.join(str(r) for r in delete_rows)}")
+
+    if delete_row_range:
+        if isinstance(delete_row_range, str) and ":" in delete_row_range:
+            parts = delete_row_range.split(":", 1)
+            try:
+                range_start = int(parts[0])
+                range_end = int(parts[1])
+            except ValueError as exc:
+                raise UserInputError(
+                    f"Invalid delete_row_range format: '{delete_row_range}'. "
+                    f"Expected 'start:end' with integer row numbers."
+                ) from exc
+        else:
+            raise UserInputError(
+                f"delete_row_range must be a 'start:end' string (e.g. '5:10'), "
+                f"got: '{delete_row_range}'."
+            )
+        if range_start < 1 or range_end < range_start:
+            raise UserInputError(
+                f"Invalid row range: start={range_start}, end={range_end}. "
+                f"Rows are 1-based and end must be >= start."
+            )
+        requests.append(
+            {
+                "deleteDimension": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "dimension": "ROWS",
+                        "startIndex": range_start - 1,
+                        "endIndex": range_end,
+                    }
+                }
+            }
+        )
+        num_range_deleted = range_end - range_start + 1
+        applied_parts.append(
+            f"deleted row range {range_start}-{range_end} ({num_range_deleted} row(s))"
+        )
+
+    if delete_columns:
+        if not isinstance(delete_columns, list):
+            raise UserInputError("delete_columns must be a list of column letters.")
+        col_indices = []
+        for col_letter in delete_columns:
+            col_idx = _column_to_index(str(col_letter).upper())
+            if col_idx is None:
+                raise UserInputError(
+                    f"Invalid column letter in delete_columns: '{col_letter}'."
+                )
+            col_indices.append((col_letter, col_idx))
+        # Sort by index descending to keep indices stable during deletion
+        col_indices.sort(key=lambda x: x[1], reverse=True)
+        for _, col_idx in col_indices:
+            requests.append(
+                {
+                    "deleteDimension": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "dimension": "COLUMNS",
+                            "startIndex": col_idx,
+                            "endIndex": col_idx + 1,
+                        }
+                    }
+                }
+            )
+        applied_parts.append(
+            f"deleted columns: {', '.join(str(c) for c in delete_columns)}"
+        )
+
+    await _batch_update(service, spreadsheet_id, requests)
+
+    return (
+        f"Applied deletions in spreadsheet {spreadsheet_id}: "
+        f"{'; '.join(applied_parts)}."
+    )
+
+
+async def move_rows(
+    service,
+    spreadsheet_id: str,
+    source_sheet: Optional[str] = None,
+    start_row: Optional[int] = None,
+    end_row: Optional[int] = None,
+    destination_sheet: Optional[str] = None,
+) -> str:
+    """Move rows from one sheet to another within the same spreadsheet
+    (copyPaste followed by deleteDimension in one batchUpdate). Row numbers
+    are 1-based. Mirrors move_sheet_rows."""
+    _require(source_sheet, "source_sheet", "move_rows")
+    _require(destination_sheet, "destination_sheet", "move_rows")
+    _require(start_row, "start_row", "move_rows", "1-based, inclusive.")
+    _require(end_row, "end_row", "move_rows", "1-based, inclusive.")
+    assert (  # narrowed by _require
+        source_sheet is not None
+        and destination_sheet is not None
+        and start_row is not None
+        and end_row is not None
+    )
+
+    if start_row < 1 or end_row < start_row:
+        raise UserInputError(
+            f"Invalid row range: start_row={start_row}, end_row={end_row}. "
+            f"Rows are 1-based and end_row must be >= start_row."
+        )
+
+    if source_sheet == destination_sheet:
+        raise UserInputError("source_sheet and destination_sheet must be different.")
+
+    spreadsheet = await asyncio.to_thread(
+        service.spreadsheets()
+        .get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets(properties(sheetId,title,gridProperties))",
+        )
+        .execute
+    )
+    sheets = spreadsheet.get("sheets", [])
+    src = _select_sheet(sheets, source_sheet)
+    dst = _select_sheet(sheets, destination_sheet)
+    src_id = src["properties"]["sheetId"]
+    dst_id = dst["properties"]["sheetId"]
+    dst_grid_rows = dst["properties"].get("gridProperties", {}).get("rowCount", 0)
+
+    # Validate that the source row block actually contains data.
+    safe_source = source_sheet.replace("'", "''")
+    src_range = f"'{safe_source}'!{start_row}:{end_row}"
+    src_values = await asyncio.to_thread(
+        service.spreadsheets()
+        .values()
+        .get(spreadsheetId=spreadsheet_id, range=src_range)
+        .execute
+    )
+    if not src_values.get("values"):
+        raise UserInputError(
+            f"Source range '{source_sheet}' rows {start_row}-{end_row} "
+            f"contains no data. Nothing to move."
+        )
+
+    # Find the last row with actual data in the destination sheet.
+    # gridProperties.rowCount is the allocated grid size (e.g. 1000 for a new
+    # sheet), not the count of rows containing data.  Fetch all columns so the
+    # append position reflects any non-empty cell, not just column A.
+    safe_destination = destination_sheet.replace("'", "''")
+    dst_values = await asyncio.to_thread(
+        service.spreadsheets()
+        .values()
+        .get(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{safe_destination}'",
+            majorDimension="ROWS",
+        )
+        .execute
+    )
+    dst_data_rows = len(dst_values.get("values", []))
+
+    num_rows = end_row - start_row + 1
+    paste_start = dst_data_rows
+
+    # If pasting beyond the current grid, expand the destination sheet first.
+    requests = []
+    if paste_start + num_rows > dst_grid_rows:
+        requests.append(
+            {
+                "appendDimension": {
+                    "sheetId": dst_id,
+                    "dimension": "ROWS",
+                    "length": (paste_start + num_rows) - dst_grid_rows,
+                }
+            }
+        )
+
+    requests.extend(
+        [
+            {
+                "copyPaste": {
+                    "source": {
+                        "sheetId": src_id,
+                        "startRowIndex": start_row - 1,
+                        "endRowIndex": end_row,
+                    },
+                    "destination": {
+                        "sheetId": dst_id,
+                        "startRowIndex": paste_start,
+                        "endRowIndex": paste_start + num_rows,
+                    },
+                    "pasteType": "PASTE_NORMAL",
+                }
+            },
+            {
+                "deleteDimension": {
+                    "range": {
+                        "sheetId": src_id,
+                        "dimension": "ROWS",
+                        "startIndex": start_row - 1,
+                        "endIndex": end_row,
+                    }
+                }
+            },
+        ]
+    )
+
+    await _batch_update(service, spreadsheet_id, requests)
+
+    return (
+        f"Successfully moved {num_rows} row(s) from '{source_sheet}' "
+        f"(rows {start_row}-{end_row}) to '{destination_sheet}' "
+        f"in spreadsheet {spreadsheet_id}."
     )
