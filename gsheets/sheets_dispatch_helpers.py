@@ -703,6 +703,673 @@ async def copy_paste(
 
 
 # ---------------------------------------------------------------------------
+# Charts family
+# ---------------------------------------------------------------------------
+
+CHART_TYPES = {
+    "BAR",
+    "LINE",
+    "AREA",
+    "COLUMN",
+    "SCATTER",
+    "COMBO",
+    "PIE",
+    "STEPPED_AREA",
+}
+LEGEND_POSITIONS = {
+    "BOTTOM_LEGEND",
+    "LEFT_LEGEND",
+    "RIGHT_LEGEND",
+    "TOP_LEGEND",
+    "NO_LEGEND",
+}
+
+
+async def _fetch_charts(service, spreadsheet_id: str) -> List[dict]:
+    spreadsheet = await asyncio.to_thread(
+        service.spreadsheets()
+        .get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets(properties(sheetId,title),charts)",
+        )
+        .execute
+    )
+    charts = []
+    for sheet in spreadsheet.get("sheets", []):
+        title = sheet.get("properties", {}).get("title", "")
+        for chart in sheet.get("charts", []) or []:
+            charts.append({**chart, "_sheet_title": title})
+    return charts
+
+
+def _describe_chart(chart: dict) -> str:
+    spec = chart.get("spec", {})
+    basic = spec.get("basicChart", {})
+    chart_type = basic.get("chartType") or next(
+        (
+            k
+            for k in (
+                "pieChart",
+                "bubbleChart",
+                "candlestickChart",
+                "orgChart",
+                "scorecardChart",
+            )
+            if k in spec
+        ),
+        "unknown",
+    )
+    return (
+        f"- chartId {chart.get('chartId', '?')}: '{spec.get('title', '(untitled)')}' "
+        f"[{chart_type}] on sheet '{chart.get('_sheet_title', '')}'"
+    )
+
+
+async def chart_list(service, spreadsheet_id: str) -> str:
+    """List all charts in the spreadsheet."""
+    charts = await _fetch_charts(service, spreadsheet_id)
+    if not charts:
+        return f"Spreadsheet {spreadsheet_id} has no charts."
+    lines = [f"Charts in spreadsheet {spreadsheet_id}:"]
+    lines.extend(_describe_chart(c) for c in charts)
+    return "\n".join(lines)
+
+
+async def chart_get(
+    service,
+    spreadsheet_id: str,
+    chart_id: Optional[int] = None,
+) -> str:
+    """Describe one chart by chart_id (see chart_list for IDs)."""
+    if chart_id is None:
+        raise UserInputError("'chart_id' is required for the 'chart_get' action.")
+    for chart in await _fetch_charts(service, spreadsheet_id):
+        if chart.get("chartId") == chart_id:
+            return _describe_chart(chart).lstrip("- ")
+    raise UserInputError(
+        f"No chart with id {chart_id} in spreadsheet {spreadsheet_id}. "
+        "Use chart_list to see valid chart IDs."
+    )
+
+
+def _build_basic_chart_spec(
+    chart_type: str,
+    title: Optional[str],
+    legend_position: str,
+    data_grid: dict,
+) -> dict:
+    spec: dict = {
+        "basicChart": {
+            "chartType": chart_type,
+            "legendPosition": legend_position,
+            "headerCount": 1,
+            "domains": [{"domain": {"sourceRange": {"sources": [data_grid]}}}],
+            "series": [{"series": {"sourceRange": {"sources": [data_grid]}}}],
+        }
+    }
+    if title:
+        spec["title"] = title
+    return spec
+
+
+async def chart_create(
+    service,
+    spreadsheet_id: str,
+    data_range: Optional[str] = None,
+    chart_type: str = "COLUMN",
+    title: Optional[str] = None,
+    legend_position: str = "RIGHT_LEGEND",
+    anchor_cell: Optional[str] = None,
+) -> str:
+    """Create a basic chart over data_range (first row = headers).
+
+    anchor_cell is the A1 cell the chart floats over (default: the sheet of
+    data_range at H1).
+    """
+    _require(data_range, "data_range", "chart_create")
+    normalized_type = (chart_type or "").upper()
+    if normalized_type not in CHART_TYPES:
+        raise UserInputError(f"chart_type must be one of {sorted(CHART_TYPES)}.")
+    normalized_legend = (legend_position or "").upper()
+    if normalized_legend not in LEGEND_POSITIONS:
+        raise UserInputError(
+            f"legend_position must be one of {sorted(LEGEND_POSITIONS)}."
+        )
+
+    sheets = await _get_sheet_properties(service, spreadsheet_id)
+    data_grid = _parse_a1_range(data_range, sheets)
+    anchor_grid = _parse_a1_range(anchor_cell, sheets) if anchor_cell else None
+
+    spec = _build_basic_chart_spec(normalized_type, title, normalized_legend, data_grid)
+    anchor = anchor_grid or {
+        "sheetId": data_grid.get("sheetId"),
+        "startRowIndex": 0,
+        "endRowIndex": 1,
+        "startColumnIndex": 7,
+        "endColumnIndex": 8,
+    }
+    chart = {
+        "spec": spec,
+        "position": {
+            "overlayPosition": {
+                "anchorCell": {
+                    "sheetId": anchor.get("sheetId"),
+                    "rowIndex": anchor.get("startRowIndex", 0),
+                    "columnIndex": anchor.get("startColumnIndex", 7),
+                }
+            }
+        },
+    }
+    response = await _batch_update(
+        service, spreadsheet_id, [{"addChart": {"chart": chart}}]
+    )
+    replies = response.get("replies") or [{}]
+    chart_id = replies[0].get("addChart", {}).get("chart", {}).get("chartId")
+    return (
+        f"Created {normalized_type} chart over '{data_range}' "
+        f"in spreadsheet {spreadsheet_id}. Chart ID: {chart_id if chart_id is not None else '(unavailable)'}."
+    )
+
+
+async def chart_update(
+    service,
+    spreadsheet_id: str,
+    chart_id: Optional[int] = None,
+    title: Optional[str] = None,
+    chart_type: Optional[str] = None,
+    legend_position: Optional[str] = None,
+) -> str:
+    """Retitle / retype / re-legend a chart. Fetches the current spec and
+    applies the given overrides, so untouched spec fields survive."""
+    if chart_id is None:
+        raise UserInputError("'chart_id' is required for the 'chart_update' action.")
+    if not any([title, chart_type, legend_position]):
+        raise UserInputError(
+            "Provide at least one of: title, chart_type, legend_position."
+        )
+    target = None
+    for chart in await _fetch_charts(service, spreadsheet_id):
+        if chart.get("chartId") == chart_id:
+            target = chart
+            break
+    if not target:
+        raise UserInputError(
+            f"No chart with id {chart_id} in spreadsheet {spreadsheet_id}."
+        )
+
+    spec = copy.deepcopy(target.get("spec", {}))
+    if title:
+        spec["title"] = title
+    basic = spec.get("basicChart")
+    if basic is None and (chart_type or legend_position):
+        raise UserInputError(
+            f"Chart {chart_id} is not a basic chart; chart_type and "
+            "legend_position overrides are only supported for basic charts."
+        )
+    if chart_type:
+        normalized_type = chart_type.upper()
+        if normalized_type not in CHART_TYPES:
+            raise UserInputError(f"chart_type must be one of {sorted(CHART_TYPES)}.")
+        basic["chartType"] = normalized_type
+    if legend_position:
+        normalized_legend = legend_position.upper()
+        if normalized_legend not in LEGEND_POSITIONS:
+            raise UserInputError(
+                f"legend_position must be one of {sorted(LEGEND_POSITIONS)}."
+            )
+        basic["legendPosition"] = normalized_legend
+
+    await _batch_update(
+        service,
+        spreadsheet_id,
+        [{"updateChartSpec": {"chartId": chart_id, "spec": spec}}],
+    )
+    return f"Updated chart {chart_id} in spreadsheet {spreadsheet_id}."
+
+
+async def chart_delete(
+    service,
+    spreadsheet_id: str,
+    chart_id: Optional[int] = None,
+) -> str:
+    """Delete a chart by chart_id. The underlying data is unaffected."""
+    if chart_id is None:
+        raise UserInputError("'chart_id' is required for the 'chart_delete' action.")
+    await _batch_update(
+        service,
+        spreadsheet_id,
+        [{"deleteEmbeddedObject": {"objectId": chart_id}}],
+    )
+    return (
+        f"Deleted chart {chart_id} from spreadsheet {spreadsheet_id}. "
+        "The underlying data was unaffected."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Banding family
+# ---------------------------------------------------------------------------
+
+
+async def banding_set(
+    service,
+    spreadsheet_id: str,
+    range_name: Optional[str] = None,
+    header_color: Optional[str] = None,
+    footer_color: Optional[str] = None,
+    first_band_color: Optional[str] = None,
+    second_band_color: Optional[str] = None,
+) -> str:
+    """Apply alternating row colors to range_name."""
+    _require(range_name, "range_name", "banding_set")
+    rows_properties = _build_table_rows_properties(
+        header_color=header_color,
+        footer_color=footer_color,
+        first_band_color=first_band_color,
+        second_band_color=second_band_color,
+    )
+    if not rows_properties:
+        raise UserInputError(
+            "Provide at least one of: header_color, footer_color, "
+            "first_band_color, second_band_color."
+        )
+    sheets = await _get_sheet_properties(service, spreadsheet_id)
+    grid_range = _parse_a1_range(range_name, sheets)
+    response = await _batch_update(
+        service,
+        spreadsheet_id,
+        [
+            {
+                "addBanding": {
+                    "bandedRange": {
+                        "range": grid_range,
+                        "rowProperties": rows_properties,
+                    }
+                }
+            }
+        ],
+    )
+    replies = response.get("replies") or [{}]
+    banding_id = (
+        replies[0].get("addBanding", {}).get("bandedRange", {}).get("bandedRangeId")
+    )
+    return (
+        f"Applied banding to '{range_name}' in spreadsheet {spreadsheet_id}. "
+        f"Banded range ID: {banding_id if banding_id is not None else '(unavailable)'}."
+    )
+
+
+async def _fetch_banded_ranges(service, spreadsheet_id: str) -> List[dict]:
+    spreadsheet = await asyncio.to_thread(
+        service.spreadsheets()
+        .get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets(properties(sheetId,title),bandedRanges)",
+        )
+        .execute
+    )
+    banded = []
+    for sheet in spreadsheet.get("sheets", []):
+        title = sheet.get("properties", {}).get("title", "")
+        for br in sheet.get("bandedRanges", []) or []:
+            banded.append({**br, "_sheet_title": title})
+    return banded
+
+
+async def banding_list(service, spreadsheet_id: str) -> str:
+    """List banded ranges."""
+    banded = await _fetch_banded_ranges(service, spreadsheet_id)
+    if not banded:
+        return f"Spreadsheet {spreadsheet_id} has no banded ranges."
+    lines = [f"Banded ranges in spreadsheet {spreadsheet_id}:"]
+    for br in banded:
+        grid = br.get("range", {})
+        lines.append(
+            f"- bandedRangeId {br.get('bandedRangeId', '?')}: sheet "
+            f"'{br.get('_sheet_title', '')}', rows "
+            f"{grid.get('startRowIndex', '?')}–{grid.get('endRowIndex', '?')}, "
+            f"cols {grid.get('startColumnIndex', '?')}–{grid.get('endColumnIndex', '?')} (0-based)"
+        )
+    return "\n".join(lines)
+
+
+async def banding_clear(
+    service,
+    spreadsheet_id: str,
+    banded_range_id: Optional[str] = None,
+) -> str:
+    """Remove banding by banded_range_id (see banding_list). Values are unaffected."""
+    _require(banded_range_id, "banded_range_id", "banding_clear")
+    await _batch_update(
+        service,
+        spreadsheet_id,
+        [{"deleteBanding": {"bandedRangeId": banded_range_id}}],
+    )
+    return (
+        f"Removed banding {banded_range_id} from spreadsheet {spreadsheet_id}. "
+        "Cell values were unaffected."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Data validation family
+# ---------------------------------------------------------------------------
+
+# Condition types accepted by DataValidationRule.condition.type. Distinct from
+# CONDITION_TYPES (conditional formatting): validation adds ONE_OF_LIST,
+# BOOLEAN, DATE_IS_VALID, NUMBER_BETWEEN, NUMBER_NOT_BETWEEN, TEXT_IS_EMAIL
+# and TEXT_IS_URL. Mirrors the Sheets v4 ConditionType enum.
+VALIDATION_CONDITION_TYPES = {
+    "NUMBER_GREATER",
+    "NUMBER_GREATER_THAN_EQ",
+    "NUMBER_LESS",
+    "NUMBER_LESS_THAN_EQ",
+    "NUMBER_EQ",
+    "NUMBER_NOT_EQ",
+    "NUMBER_BETWEEN",
+    "NUMBER_NOT_BETWEEN",
+    "TEXT_CONTAINS",
+    "TEXT_NOT_CONTAINS",
+    "TEXT_EQ",
+    "TEXT_STARTS_WITH",
+    "TEXT_ENDS_WITH",
+    "TEXT_IS_EMAIL",
+    "TEXT_IS_URL",
+    "DATE_EQ",
+    "DATE_BEFORE",
+    "DATE_AFTER",
+    "DATE_ON_OR_BEFORE",
+    "DATE_ON_OR_AFTER",
+    "DATE_BETWEEN",
+    "DATE_NOT_BETWEEN",
+    "DATE_IS_VALID",
+    "ONE_OF_RANGE",
+    "ONE_OF_LIST",
+    "BLANK",
+    "NOT_BLANK",
+    "CUSTOM_FORMULA",
+    "BOOLEAN",
+}
+
+
+def _build_validation_rule(
+    condition_type: str,
+    condition_values: Optional[List[Union[str, int, float]]],
+    strict: bool,
+    show_custom_ui: bool,
+    input_message: Optional[str],
+) -> dict:
+    normalized = condition_type.upper()
+    if normalized not in VALIDATION_CONDITION_TYPES:
+        raise UserInputError(
+            f"condition_type must be one of {sorted(VALIDATION_CONDITION_TYPES)}."
+        )
+    rule: dict = {
+        "condition": {"type": normalized},
+        "strict": strict,
+        "showCustomUi": show_custom_ui,
+    }
+    if condition_values:
+        rule["condition"]["values"] = [
+            {"userEnteredValue": str(v)} for v in condition_values
+        ]
+    if input_message:
+        rule["inputMessage"] = input_message
+    return rule
+
+
+async def validation_set(
+    service,
+    spreadsheet_id: str,
+    range_name: Optional[str] = None,
+    condition_type: Optional[str] = None,
+    condition_values: Optional[Union[str, List[Union[str, int, float]]]] = None,
+    strict: bool = True,
+    show_custom_ui: bool = True,
+    input_message: Optional[str] = None,
+) -> str:
+    """Set a data validation rule on range_name.
+
+    condition_type uses the same vocabulary as conditional_format (e.g.
+    ONE_OF_LIST, NUMBER_GREATER, DATE_BEFORE, TEXT_CONTAINS,
+    BOOLEAN, DATE_IS_VALID). ONE_OF_LIST needs condition_values.
+    """
+    _require(range_name, "range_name", "validation_set")
+    _require(condition_type, "condition_type", "validation_set")
+    values_list = _parse_condition_values(condition_values)
+    rule = _build_validation_rule(
+        condition_type, values_list, strict, show_custom_ui, input_message
+    )
+    if rule["condition"]["type"] == "ONE_OF_LIST" and not values_list:
+        raise UserInputError(
+            "condition_values is required for a ONE_OF_LIST validation rule."
+        )
+    sheets = await _get_sheet_properties(service, spreadsheet_id)
+    grid_range = _parse_a1_range(range_name, sheets)
+    await _batch_update(
+        service,
+        spreadsheet_id,
+        [{"setDataValidation": {"range": grid_range, "rule": rule}}],
+    )
+    return (
+        f"Set {rule['condition']['type']} validation on '{range_name}' "
+        f"in spreadsheet {spreadsheet_id}."
+    )
+
+
+async def validation_clear(
+    service,
+    spreadsheet_id: str,
+    range_name: Optional[str] = None,
+) -> str:
+    """Remove data validation from range_name. Values are unaffected."""
+    _require(range_name, "range_name", "validation_clear")
+    sheets = await _get_sheet_properties(service, spreadsheet_id)
+    grid_range = _parse_a1_range(range_name, sheets)
+    await _batch_update(
+        service,
+        spreadsheet_id,
+        [
+            {
+                "repeatCell": {
+                    "range": grid_range,
+                    "cell": {},
+                    "fields": "dataValidation",
+                }
+            }
+        ],
+    )
+    return (
+        f"Cleared data validation from '{range_name}' in spreadsheet "
+        f"{spreadsheet_id}. Cell values were unaffected."
+    )
+
+
+async def validation_get(
+    service,
+    spreadsheet_id: str,
+    range_name: Optional[str] = None,
+) -> str:
+    """Show the data validation rules in range_name."""
+    _require(range_name, "range_name", "validation_get")
+    response = await asyncio.to_thread(
+        service.spreadsheets()
+        .get(
+            spreadsheetId=spreadsheet_id,
+            ranges=[range_name],
+            includeGridData=True,
+            fields="sheets(data(startRow,startColumn,rowData(values(dataValidation))))",
+        )
+        .execute
+    )
+    found = []
+    for sheet in response.get("sheets", []):
+        for grid_data in sheet.get("data", []):
+            start_row = grid_data.get("startRow", 0)
+            start_col = grid_data.get("startColumn", 0)
+            for r, row in enumerate(grid_data.get("rowData", []) or []):
+                for c, cell in enumerate(row.get("values", []) or []):
+                    rule = cell.get("dataValidation")
+                    if rule:
+                        condition = rule.get("condition", {})
+                        values = ", ".join(
+                            v.get("userEnteredValue", "")
+                            for v in condition.get("values", []) or []
+                        )
+                        found.append(
+                            f"- R{start_row + r + 1}C{start_col + c + 1}: "
+                            f"{condition.get('type', '?')}"
+                            + (f" [{values}]" if values else "")
+                        )
+    if not found:
+        return f"No data validation rules in '{range_name}' of spreadsheet {spreadsheet_id}."
+    return "\n".join(
+        [f"Data validation in '{range_name}' of spreadsheet {spreadsheet_id}:"] + found
+    )
+
+
+# ---------------------------------------------------------------------------
+# Notes, filters, links
+# ---------------------------------------------------------------------------
+
+
+async def note_set(
+    service,
+    spreadsheet_id: str,
+    range_name: Optional[str] = None,
+    note: Optional[str] = None,
+) -> str:
+    """Set (or replace) the note on every cell of range_name. Empty note clears."""
+    _require(range_name, "range_name", "note_set")
+    if note is None:
+        raise UserInputError(
+            "'note' is required for the 'note_set' action (use '' to clear)."
+        )
+    sheets = await _get_sheet_properties(service, spreadsheet_id)
+    grid_range = _parse_a1_range(range_name, sheets)
+    await _batch_update(
+        service,
+        spreadsheet_id,
+        [
+            {
+                "repeatCell": {
+                    "range": grid_range,
+                    "cell": {"note": note},
+                    "fields": "note",
+                }
+            }
+        ],
+    )
+    verb = "Cleared note on" if note == "" else "Set note on"
+    return f"{verb} '{range_name}' in spreadsheet {spreadsheet_id}."
+
+
+async def filter_set(
+    service,
+    spreadsheet_id: str,
+    sheet_name: Optional[str] = None,
+    range_name: Optional[str] = None,
+    clear: bool = False,
+) -> str:
+    """Set or clear the basic filter. filter_set needs range_name; clearing
+    needs only sheet_name."""
+    if clear:
+        _require(sheet_name, "sheet_name", "filter_set (clear)")
+        sheet = await _resolve_sheet(service, spreadsheet_id, sheet_name, "filter_set")
+        await _batch_update(
+            service,
+            spreadsheet_id,
+            [{"clearBasicFilter": {"sheetId": sheet["properties"]["sheetId"]}}],
+        )
+        return f"Cleared the basic filter on '{sheet_name}' in spreadsheet {spreadsheet_id}."
+
+    _require(range_name, "range_name", "filter_set")
+    sheets = await _get_sheet_properties(service, spreadsheet_id)
+    grid_range = _parse_a1_range(range_name, sheets)
+    await _batch_update(
+        service,
+        spreadsheet_id,
+        [{"setBasicFilter": {"filter": {"range": grid_range}}}],
+    )
+    return f"Set a basic filter over '{range_name}' in spreadsheet {spreadsheet_id}."
+
+
+async def links_set(
+    service,
+    spreadsheet_id: str,
+    range_name: Optional[str] = None,
+    url: Optional[str] = None,
+    label: Optional[str] = None,
+) -> str:
+    """Write a hyperlink into each cell of range_name as a HYPERLINK formula."""
+    _require(range_name, "range_name", "links_set")
+    _require(url, "url", "links_set")
+    if not (
+        url.startswith("http://")
+        or url.startswith("https://")
+        or url.startswith("mailto:")
+    ):
+        raise UserInputError("url must start with http://, https:// or mailto:.")
+    text = label or url
+    escaped_url = url.replace('"', '""')
+    escaped_text = text.replace('"', '""')
+    formula = f'=HYPERLINK("{escaped_url}","{escaped_text}")'
+    result = await asyncio.to_thread(
+        service.spreadsheets()
+        .values()
+        .update(
+            spreadsheetId=spreadsheet_id,
+            range=range_name,
+            valueInputOption="USER_ENTERED",
+            body={"values": [[formula]]},
+        )
+        .execute
+    )
+    updated = result.get("updatedCells", "?")
+    return (
+        f"Wrote hyperlink to {url} into '{range_name}' "
+        f"({updated} cell(s)) in spreadsheet {spreadsheet_id}."
+    )
+
+
+async def links_get(
+    service,
+    spreadsheet_id: str,
+    range_name: Optional[str] = None,
+) -> str:
+    """List hyperlinks in range_name."""
+    _require(range_name, "range_name", "links_get")
+    response = await asyncio.to_thread(
+        service.spreadsheets()
+        .get(
+            spreadsheetId=spreadsheet_id,
+            ranges=[range_name],
+            includeGridData=True,
+            fields="sheets(data(startRow,startColumn,rowData(values(hyperlink,formattedValue))))",
+        )
+        .execute
+    )
+    found = []
+    for sheet in response.get("sheets", []):
+        for grid_data in sheet.get("data", []):
+            start_row = grid_data.get("startRow", 0)
+            start_col = grid_data.get("startColumn", 0)
+            for r, row in enumerate(grid_data.get("rowData", []) or []):
+                for c, cell in enumerate(row.get("values", []) or []):
+                    link = cell.get("hyperlink")
+                    if link:
+                        found.append(
+                            f"- R{start_row + r + 1}C{start_col + c + 1}: "
+                            f"'{cell.get('formattedValue', '')}' -> {link}"
+                        )
+    if not found:
+        return f"No hyperlinks in '{range_name}' of spreadsheet {spreadsheet_id}."
+    return "\n".join(
+        [f"Hyperlinks in '{range_name}' of spreadsheet {spreadsheet_id}:"] + found
+    )
+
+
+# ---------------------------------------------------------------------------
 # Absorbed existing tools family: format_range / conditional_format /
 # resize_dimensions / move_rows
 #

@@ -2477,6 +2477,11 @@ SHEETS_READ_ACTIONS = (
     "table_get",
     "named_range_get",
     "named_range_list",
+    "chart_get",
+    "chart_list",
+    "banding_list",
+    "validation_get",
+    "links_get",
 )
 
 SHEETS_MANAGE_ACTIONS = (
@@ -2495,6 +2500,16 @@ SHEETS_MANAGE_ACTIONS = (
     "named_range_delete",
     "sheet_copy",
     "copy_paste",
+    "chart_create",
+    "chart_update",
+    "chart_delete",
+    "banding_set",
+    "banding_clear",
+    "validation_set",
+    "validation_clear",
+    "note_set",
+    "filter_set",
+    "links_set",
 )
 
 SHEETS_DELETE_ACTIONS = (
@@ -2524,6 +2539,11 @@ async def sheets_read(
         "table_get",
         "named_range_get",
         "named_range_list",
+        "chart_get",
+        "chart_list",
+        "banding_list",
+        "validation_get",
+        "links_get",
     ],
     sheet_name: Optional[str] = None,
     range_name: Optional[str] = None,
@@ -2540,6 +2560,11 @@ async def sheets_read(
         list_sheet_tables to discover IDs.
       - named_range_get: describe one named range by params.name (exact).
       - named_range_list: list all named ranges in the spreadsheet.
+      - chart_get: describe one chart by params.chart_id.
+      - chart_list: list all charts (IDs, titles, types).
+      - banding_list: list banded ranges and their IDs.
+      - validation_get: show data validation rules in range_name.
+      - links_get: list hyperlinks in range_name.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
@@ -2571,6 +2596,26 @@ async def sheets_read(
         )
     elif action == "named_range_list":
         return await dispatch.named_range_list(service, spreadsheet_id)
+    elif action == "chart_get":
+        return await dispatch.chart_get(
+            service, spreadsheet_id, chart_id=extra.get("chart_id")
+        )
+    elif action == "chart_list":
+        return await dispatch.chart_list(service, spreadsheet_id)
+    elif action == "banding_list":
+        return await dispatch.banding_list(service, spreadsheet_id)
+    elif action == "validation_get":
+        return await dispatch.validation_get(
+            service,
+            spreadsheet_id,
+            range_name=range_name or extra.get("range_name"),
+        )
+    elif action == "links_get":
+        return await dispatch.links_get(
+            service,
+            spreadsheet_id,
+            range_name=range_name or extra.get("range_name"),
+        )
     return f"Unknown action '{action}'. Valid: {', '.join(SHEETS_READ_ACTIONS)}"
 
 
@@ -2605,6 +2650,16 @@ async def sheets_manage(
         "named_range_delete",
         "sheet_copy",
         "copy_paste",
+        "chart_create",
+        "chart_update",
+        "chart_delete",
+        "banding_set",
+        "banding_clear",
+        "validation_set",
+        "validation_clear",
+        "note_set",
+        "filter_set",
+        "links_set",
     ],
     sheet_name: Optional[str] = None,
     range_name: Optional[str] = None,
@@ -2682,6 +2737,30 @@ async def sheets_manage(
         destination_range (required), paste_type (PASTE_NORMAL default;
         also PASTE_VALUES, PASTE_FORMAT, PASTE_NO_BORDERS, PASTE_FORMULA,
         PASTE_DATA_VALIDATION, PASTE_CONDITIONAL_FORMATTING).
+      - chart_create: basic chart over params.data_range (first row =
+        headers). params: chart_type (BAR, LINE, AREA, COLUMN default,
+        SCATTER, COMBO, PIE, STEPPED_AREA), title, legend_position
+        (RIGHT_LEGEND default), anchor_cell (A1; default near H1).
+      - chart_update: retitle/retype/re-legend a chart without touching
+        other spec fields. params: chart_id (required) plus title,
+        chart_type and/or legend_position.
+      - chart_delete: remove a chart by params.chart_id. Data unaffected.
+      - banding_set: alternating row colors over range_name. params:
+        header_color, footer_color, first_band_color, second_band_color
+        (hex; at least one required).
+      - banding_clear: remove banding by params.banded_range_id.
+      - validation_set: data validation on range_name. params:
+        condition_type (required; ONE_OF_LIST, NUMBER_GREATER, BOOLEAN,
+        DATE_IS_VALID, TEXT_CONTAINS, ...), condition_values (required for
+        ONE_OF_LIST), strict (default true), show_custom_ui (default true),
+        input_message.
+      - validation_clear: remove data validation from range_name.
+      - note_set: set/replace the note on range_name; params.note (''
+        clears).
+      - filter_set: set a basic filter over range_name, or clear with
+        params.clear=true + sheet_name.
+      - links_set: write a hyperlink into range_name as a HYPERLINK
+        formula. params: url (required), label.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
@@ -2856,6 +2935,83 @@ async def sheets_manage(
             source_range=extra.get("source_range"),
             destination_range=extra.get("destination_range"),
             paste_type=extra.get("paste_type", "PASTE_NORMAL"),
+        )
+    elif action == "chart_create":
+        return await dispatch.chart_create(
+            service,
+            spreadsheet_id,
+            data_range=extra.get("data_range"),
+            chart_type=extra.get("chart_type", "COLUMN"),
+            title=extra.get("title"),
+            legend_position=extra.get("legend_position", "RIGHT_LEGEND"),
+            anchor_cell=extra.get("anchor_cell"),
+        )
+    elif action == "chart_update":
+        return await dispatch.chart_update(
+            service,
+            spreadsheet_id,
+            chart_id=extra.get("chart_id"),
+            title=extra.get("title"),
+            chart_type=extra.get("chart_type"),
+            legend_position=extra.get("legend_position"),
+        )
+    elif action == "chart_delete":
+        return await dispatch.chart_delete(
+            service, spreadsheet_id, chart_id=extra.get("chart_id")
+        )
+    elif action == "banding_set":
+        return await dispatch.banding_set(
+            service,
+            spreadsheet_id,
+            range_name=range_name or extra.get("range_name"),
+            header_color=extra.get("header_color"),
+            footer_color=extra.get("footer_color"),
+            first_band_color=extra.get("first_band_color"),
+            second_band_color=extra.get("second_band_color"),
+        )
+    elif action == "banding_clear":
+        return await dispatch.banding_clear(
+            service, spreadsheet_id, banded_range_id=extra.get("banded_range_id")
+        )
+    elif action == "validation_set":
+        return await dispatch.validation_set(
+            service,
+            spreadsheet_id,
+            range_name=range_name or extra.get("range_name"),
+            condition_type=extra.get("condition_type"),
+            condition_values=extra.get("condition_values"),
+            strict=extra.get("strict", True),
+            show_custom_ui=extra.get("show_custom_ui", True),
+            input_message=extra.get("input_message"),
+        )
+    elif action == "validation_clear":
+        return await dispatch.validation_clear(
+            service,
+            spreadsheet_id,
+            range_name=range_name or extra.get("range_name"),
+        )
+    elif action == "note_set":
+        return await dispatch.note_set(
+            service,
+            spreadsheet_id,
+            range_name=range_name or extra.get("range_name"),
+            note=extra.get("note"),
+        )
+    elif action == "filter_set":
+        return await dispatch.filter_set(
+            service,
+            spreadsheet_id,
+            sheet_name=sheet_name or extra.get("sheet_name"),
+            range_name=range_name or extra.get("range_name"),
+            clear=extra.get("clear", False),
+        )
+    elif action == "links_set":
+        return await dispatch.links_set(
+            service,
+            spreadsheet_id,
+            range_name=range_name or extra.get("range_name"),
+            url=extra.get("url"),
+            label=extra.get("label"),
         )
     return f"Unknown action '{action}'. Valid: {', '.join(SHEETS_MANAGE_ACTIONS)}"
 
