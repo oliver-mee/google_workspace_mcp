@@ -400,3 +400,98 @@ async def test_sheets_manage_passes_top_level_colors_to_banding_set(monkeypatch)
     assert "Banded range ID" in result
     assert captured.get("header_color") == "#445566"
     assert captured.get("range_name") == "Sheet1!A1:B5"
+
+
+# ---------------------------------------------------------------------------
+# 1.29.2 — sheets_read action="get" returns values, not metadata
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sheets_read_get_returns_values_not_metadata(monkeypatch):
+    """After 1.29.2, action="get" must call read_sheet_values, not metadata."""
+
+    captured = {}
+
+    async def fake_read_sheet_values(service, spreadsheet_id, **kwargs):
+        captured["called"] = "values"
+        captured.update(kwargs)
+        return "Row 1: alpha, 7\nRow 2: true, omega"
+
+    async def fake_metadata(service, spreadsheet_id):
+        captured["called"] = "metadata"
+        return "Spreadsheet (metadata view)"
+
+    monkeypatch.setattr(sheets_tools, "read_sheet_values", fake_read_sheet_values)
+    monkeypatch.setattr(dispatch, "sheets_get_metadata", fake_metadata)
+    service = Mock()
+
+    fn = sheets_tools.sheets_read
+    while hasattr(fn, "__wrapped__"):
+        fn = fn.__wrapped__
+
+    result = await fn(
+        service=service,
+        user_google_email="user@example.com",
+        spreadsheet_id="SS1",
+        action="get",
+        range_name="Main!A1:B2",
+    )
+    assert captured["called"] == "values"
+    assert captured["range_name"] == "Main!A1:B2"
+    assert "alpha, 7" in result
+
+
+@pytest.mark.asyncio
+async def test_sheets_read_get_defaults_to_first_sheet_when_range_omitted(monkeypatch):
+    captured = {}
+
+    async def fake_get_sheet_properties(service, spreadsheet_id):
+        return [
+            {"properties": {"sheetId": 7, "title": "My First Tab"}},
+            {"properties": {"sheetId": 8, "title": "Other"}},
+        ]
+
+    async def fake_read_sheet_values(service, spreadsheet_id, **kwargs):
+        captured.update(kwargs)
+        return "ok"
+
+    monkeypatch.setattr(dispatch, "_get_sheet_properties", fake_get_sheet_properties)
+    monkeypatch.setattr(sheets_tools, "read_sheet_values", fake_read_sheet_values)
+    service = Mock()
+
+    fn = sheets_tools.sheets_read
+    while hasattr(fn, "__wrapped__"):
+        fn = fn.__wrapped__
+
+    result = await fn(
+        service=service,
+        user_google_email="user@example.com",
+        spreadsheet_id="SS1",
+        action="get",
+    )
+    assert captured["range_name"] == "My First Tab"
+    assert result == "ok"
+
+
+@pytest.mark.asyncio
+async def test_sheets_read_metadata_still_returns_metadata(monkeypatch):
+    """Regression: action='metadata' must keep its old behavior."""
+
+    async def fake_metadata(service, spreadsheet_id):
+        return "Spreadsheet (metadata view)"
+
+    monkeypatch.setattr(dispatch, "sheets_get_metadata", fake_metadata)
+    service = Mock()
+
+    fn = sheets_tools.sheets_read
+    while hasattr(fn, "__wrapped__"):
+        fn = fn.__wrapped__
+
+    result = await fn(
+        service=service,
+        user_google_email="user@example.com",
+        spreadsheet_id="SS1",
+        action="metadata",
+    )
+    assert "metadata" in result.lower()

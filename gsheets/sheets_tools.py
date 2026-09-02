@@ -2543,7 +2543,7 @@ SHEETS_DELETE_ACTIONS = (
 # the full Python docstring's action section. Keep these contracts compact but
 # explicit so agents can select an action and supply its required fields without
 # guessing or first triggering a validation error.
-SHEETS_READ_DESCRIPTION = """Read-only Google Sheets operations. Common required fields: spreadsheet_id and action. Use range_name as an A1 range such as 'Sheet1!A1:D20'. Actions and required fields: table_get requires table_id or table_name; named_range_get requires params.name; named_range_list requires none; chart_get requires params.chart_id; chart_list requires none; banding_list requires none; validation_get requires range_name; links_get requires range_name; metadata and get require none; export accepts optional range_name and returns CSV; datasource_describe requires none; datasource_table_describe accepts optional range_name. Use this tool only for reads. Large-result controls apply to export: map=true returns a token-bounded block index instead of the CSV; navigate='<block>' or '<block>.<row>' (from a map) returns content at that ordinal; head=<tokens> plus navigate returns a bounded window with a next_call hint; skip_tokens=<tokens> continues a window. Omit all four for the default full result. Token counts are estimates (~4 chars per token)."""
+SHEETS_READ_DESCRIPTION = """Read-only Google Sheets operations. Common required fields: spreadsheet_id and action. Use range_name as an A1 range such as 'Sheet1!A1:D20'. Actions and required fields: table_get requires table_id or table_name; named_range_get requires params.name; named_range_list requires none; chart_get requires params.chart_id; chart_list requires none; banding_list requires none; validation_get requires range_name; links_get requires range_name; metadata returns the spreadsheet summary (title, locale, timezone, tabs) and requires none; get returns cell values in range_name (defaults to the first sheet's used range when range_name is omitted); export accepts optional range_name and returns CSV; datasource_describe requires none; datasource_table_describe accepts optional range_name. Use this tool only for reads. Large-result controls apply to export: map=true returns a token-bounded block index instead of the CSV; navigate='<block>' or '<block>.<row>' (from a map) returns content at that ordinal; head=<tokens> plus navigate returns a bounded window with a next_call hint; skip_tokens=<tokens> continues a window. Omit all four for the default full result. Token counts are estimates (~4 chars per token)."""
 
 SHEETS_MANAGE_DESCRIPTION = """Non-destructive Google Sheets writes. Common required fields: spreadsheet_id and action. Use range_name for A1 ranges and params for action-specific fields. Required fields by action: table_create requires range_name and table_name; optional column_properties is a list of {columnName, columnType, values}; format_range requires range_name plus at least one style field; conditional_format requires range_name and params.operation (add_rule or delete_rule), with condition_type/condition_values/colors for add_rule or rule_index for delete_rule; resize_dimensions requires sheet_name plus at least one sizing/freeze/hide/insert field in params; move_rows requires sheet_name, destination_sheet, params.start_row and params.end_row; tab_add requires params.new_tab_name; tab_rename requires sheet_name and params.new_tab_name; tab_reorder requires sheet_name and params.index; merge and unmerge require range_name; find_replace requires params.find and params.replacement; named_range_add requires range_name and params.name; named_range_delete requires params.name or params.named_range_id; sheet_copy requires sheet_name and params.destination_spreadsheet_id; copy_paste requires params.source_range and params.destination_range; chart_create requires params.data_range; chart_update requires params.chart_id plus a field to change; chart_delete requires params.chart_id; banding_set requires range_name plus at least one color; banding_clear requires params.banded_range_id; validation_set requires range_name and params.condition_type; validation_clear requires range_name; note_set requires range_name and params.note; filter_set requires range_name unless params.clear=true; links_set requires range_name and params.url; batch_update requires params.requests, a non-empty list of non-destructive Sheets API request objects. Do not use batch_update to delete data; use sheets_delete."""
 
@@ -2681,7 +2681,22 @@ async def sheets_read(
             range_name=range_name or extra.get("range_name"),
         )
     elif action == "get":
-        return await dispatch.sheets_get_metadata(service, spreadsheet_id)
+        # 1.29.2: `get` returns cell values for a range (legacy semantics), not
+        # the spreadsheet summary (use `metadata` for that). We default to
+        # the first sheet's used range when range_name is omitted, so callers
+        # asking for "the data" without naming a range still get useful output.
+        target = range_name or extra.get("range_name")
+        if not target:
+            from gsheets.sheets_dispatch_helpers import _get_sheet_properties
+
+            sheets = await _get_sheet_properties(service, spreadsheet_id)
+            if not sheets:
+                return f"Spreadsheet {spreadsheet_id} has no sheets."
+            first = sheets[0].get("properties", {})
+            target = first.get("title", "Sheet1")
+        return await read_sheet_values(
+            service, spreadsheet_id, range_name=target
+        )
     elif action == "export":
         return await dispatch.export_csv(
             service,

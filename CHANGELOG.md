@@ -17,6 +17,23 @@ The version is the single package version in `pyproject.toml` (mirrored in
 `tools/list` after reconnecting or when the server version changes; a GPT's own
 "Version name" (for example, `dev mode`) is separate connector metadata.
 
+## 1.29.2 — 2026-09-02
+
+MINOR release: `sheets_read action="get"` now returns cell values for a range
+(legacy semantics) instead of the spreadsheet summary. The summary is
+still available via `action="metadata"`. **Migration:** callers that used
+`get` for metadata should switch to `metadata`; callers that used `get`
+expecting values now get them directly.
+
+- Default `range_name` falls back to the first sheet's title when omitted.
+- `SHEETS_READ_DESCRIPTION` published to clients: `metadata` (summary) and
+  `get` (cell values) are now distinct, both with their required fields
+  spelled out.
+- The action's output shape changed (metadata → cell values), so per the
+  semantic-versioning policy this is a MINOR bump.
+
+Three regression tests (tests/gsheets/test_sheets_1_29_fixes.py).
+
 ## 1.29.1 — 2026-09-02
 
 Retest-driven bugfixes (3 of the 8 failures from the GPT connector E2E
