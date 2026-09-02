@@ -263,3 +263,140 @@ async def test_modify_sheet_values_schema_allows_numbers_and_bools():
     assert '"integer"' in values_prop or '"number"' in values_prop
     assert '"boolean"' in values_prop
     assert '"null"' in values_prop
+
+
+# ---------------------------------------------------------------------------
+# 1.29.1 — retest-driven bugfixes
+# ---------------------------------------------------------------------------
+
+
+def test_datasource_table_describe_fields_mask_no_longer_requests_data_source_tables():
+    """dataSourceTables is a conditional collection; explicit leaf fields raise
+    400 on sheets without a Connected Sheets data source. We dropped the leaf
+    request entirely (the parent array still appears when present)."""
+    from gsheets import sheets_dispatch_helpers as dispatch
+
+    assert "dataSourceTables(" not in dispatch.DATASOURCE_TABLE_DESCRIBE_FIELDS
+    assert (
+        dispatch.DATASOURCE_TABLE_DESCRIBE_FIELDS == "sheets(properties(title),tables)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_sheet_values_notes_only_cell_survives_empty_values(monkeypatch):
+    """Empty cell + note must not hit the 'No data found' early exit."""
+
+    captured = {}
+
+    async def fake_grid_metadata(
+        service,
+        spreadsheet_id,
+        resolved_range,
+        values,
+        include_hyperlinks=False,
+        include_notes=False,
+    ):
+        # Simulate what the real impl now does: fetch even when values is empty
+        # so long as notes were requested.
+        captured["include_notes"] = include_notes
+        return ("", "NOTES:\n- H1: Dispatcher test note")
+
+    monkeypatch.setattr(sheets_tools, "_fetch_grid_metadata", fake_grid_metadata)
+    service = Mock()
+    service.spreadsheets().values().get().execute.return_value = {
+        "values": [],
+        "range": "'Sheet1'!H1",
+    }
+
+    fn = sheets_tools.read_sheet_values
+    while hasattr(fn, "__wrapped__"):
+        fn = fn.__wrapped__
+
+    result = await fn(
+        service, "user@example.com", "SS1", "Sheet1!H1", include_notes=True
+    )
+    # The fetch happened (because notes were requested).
+    assert captured["include_notes"] is True
+    # And the result preserves the note instead of swallowing it.
+    assert "No data found" not in result
+    assert "Dispatcher test note" in result
+
+
+@pytest.mark.asyncio
+async def test_banding_set_accepts_top_level_colors():
+    """Top-level header_color / first_band_color must reach rows_properties."""
+    service = Mock()
+    service.spreadsheets().batchUpdate().execute.return_value = {
+        "replies": [{"addBanding": {"bandedRange": {"bandedRangeId": 999}}}]
+    }
+    service.spreadsheets().get().execute.return_value = {
+        "sheets": [
+            {
+                "properties": {"sheetId": 0, "title": "Sheet1"},
+                "bandedRanges": [],
+            }
+        ]
+    }
+
+    result = await dispatch.banding_set(
+        service,
+        "SS1",
+        range_name="Sheet1!A1:B5",
+        header_color="#FF0000",
+        first_band_color="#00FF00",
+    )
+    assert "999" in result
+    # Confirm the API call actually went out with the colors.
+    request = service.spreadsheets().batchUpdate.call_args.kwargs["body"]["requests"][0]
+    props = request["addBanding"]["bandedRange"]["rowProperties"]
+    assert "headerColorStyle" in props
+    assert "firstBandColorStyle" in props
+
+
+@pytest.mark.asyncio
+async def test_banding_set_preflight_error_explains_fallback():
+    service = Mock()
+    with pytest.raises(UserInputError) as exc:
+        await dispatch.banding_set(service, "SS1", range_name="Sheet1!A1:B5")
+    assert "top level" in str(exc.value).lower()
+    service.spreadsheets().batchUpdate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sheets_manage_passes_top_level_colors_to_banding_set(monkeypatch):
+    """The dispatcher wrapper reads top-level color kwargs (not just params)."""
+    captured = {}
+
+    async def fake_banding_set(service, spreadsheet_id, **kwargs):
+        captured.update(kwargs)
+        return "Banded range ID: 1"
+
+    monkeypatch.setattr(dispatch, "banding_set", fake_banding_set)
+    service = Mock()
+
+    fn = sheets_tools.sheets_manage
+    while hasattr(fn, "__wrapped__"):
+        fn = fn.__wrapped__
+
+    result = await fn(
+        service=service,
+        user_google_email="user@example.com",
+        spreadsheet_id="SS1",
+        action="banding_set",
+        range_name="Sheet1!A1:B5",
+        header_color="#112233",
+    )
+    assert "Banded range ID" in result
+    assert captured.get("header_color") == "#112233"
+    # And params-fallback still works for clients that pack colors into params.
+    captured.clear()
+    result = await fn(
+        service=service,
+        user_google_email="user@example.com",
+        spreadsheet_id="SS1",
+        action="banding_set",
+        params={"range_name": "Sheet1!A1:B5", "header_color": "#445566"},
+    )
+    assert "Banded range ID" in result
+    assert captured.get("header_color") == "#445566"
+    assert captured.get("range_name") == "Sheet1!A1:B5"

@@ -17,6 +17,33 @@ The version is the single package version in `pyproject.toml` (mirrored in
 `tools/list` after reconnecting or when the server version changes; a GPT's own
 "Version name" (for example, `dev mode`) is separate connector metadata.
 
+## 1.29.1 — 2026-09-02
+
+Retest-driven bugfixes (3 of the 8 failures from the GPT connector E2E
+on 1.29.0). The other five fixes from 1.29.0 (banding atomicity, values
+schema, chart_create rectangular ranges, datasource masks, notes early-exit
+on empty cells) remain — these patches sharpen the cases that still slipped
+through under realistic client patterns.
+
+- **`datasource_table_describe` mask** — Google 400s on
+  `sheets.dataSourceTables.dataSourceId` because `dataSourceTables` is a
+  conditional array that does not exist on sheets without a Connected Sheets
+  data source. Removed the explicit leaf fields; the parent array still
+  appears in responses when present.
+- **`read_sheet_values` note-only cells** — `_fetch_grid_metadata` returned
+  `("", "")` for empty ranges because `_a1_range_for_values` could not
+  compute tight bounds. Falls back to the user's original range when values
+  is empty, so a note on an empty cell is now returned instead of being
+  swallowed by the "No data found" early exit.
+- **`banding_set` top-level colors** — the dispatcher was reading colors
+  only from the `params` dict, so callers passing them as top-level kwargs
+  (the natural shape for an MCP-aware client) saw them silently dropped and
+  were rejected with "Provide at least one of: ...". Now reads top-level
+  kwargs first with `params` as fallback; the error message explains the
+  fallback; the `banding_set` docstring line documents both shapes.
+
+Five regression tests in `tests/gsheets/test_sheets_1_29_fixes.py`.
+
 ## 1.29.0 — 2026-09-02
 
 Bugfix release driven by the ChatGPT connector E2E test (95 invocations,

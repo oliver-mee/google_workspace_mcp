@@ -1161,11 +1161,14 @@ async def _fetch_grid_metadata(
     if not include_hyperlinks and not include_notes:
         return "", ""
 
-    tight_range = _a1_range_for_values(resolved_range, values)
+    # Prefer a tight bounds, but fall back to the user's range when there are
+    # no values yet (e.g. note-only cells): without this fallback the
+    # notes/hyperlinks fetch is skipped and the early-exit swallows the result.
+    tight_range = _a1_range_for_values(resolved_range, values) or resolved_range
     if not tight_range:
         logger.info(
             "[read_sheet_values] Skipping grid metadata fetch for range '%s': "
-            "unable to determine tight bounds",
+            "unable to determine bounds",
             resolved_range,
         )
         return "", ""

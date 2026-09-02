@@ -268,6 +268,16 @@ async def read_sheet_values(
             service, spreadsheet_id, resolved_range
         )
 
+    # Single-cell / note-only / hyperlink-only range with metadata: return the
+    # metadata and explain that no values were present (avoids the formatter's
+    # "no values" early-exit below swallowing the metadata).
+    if not values and (notes_section or hyperlink_section):
+        header = (
+            f"No values found in range '{range_name}' in spreadsheet {spreadsheet_id} "
+            f"for {user_google_email}, but the range has metadata:"
+        )
+        return header + hyperlink_section + notes_section + (clamp_note or "")
+
     if not values and not formula_values and not hyperlink_section and not notes_section:
         return f"No data found in range '{range_name}' for {user_google_email}." + (
             clamp_note or ""
@@ -2821,9 +2831,10 @@ async def sheets_manage(
         other spec fields. params: chart_id (required) plus title,
         chart_type and/or legend_position.
       - chart_delete: remove a chart by params.chart_id. Data unaffected.
-      - banding_set: alternating row colors over range_name. params:
-        header_color, footer_color, first_band_color, second_band_color
-        (hex; at least one required).
+      - banding_set: alternating row colors over range_name. Accepts at
+        least one of header_color, footer_color, first_band_color,
+        second_band_color ('#RRGGBB') at the top level of sheets_manage
+        or inside params; returns the bandedRangeId on success.
       - banding_clear: remove banding by params.banded_range_id.
       - validation_set: data validation on range_name. params:
         condition_type (required; ONE_OF_LIST, NUMBER_GREATER, BOOLEAN,
@@ -3043,10 +3054,14 @@ async def sheets_manage(
             service,
             spreadsheet_id,
             range_name=range_name or extra.get("range_name"),
-            header_color=extra.get("header_color"),
-            footer_color=extra.get("footer_color"),
-            first_band_color=extra.get("first_band_color"),
-            second_band_color=extra.get("second_band_color"),
+            # Top-level kwargs take precedence over `params` so explicit callers
+            # (e.g. clients that route named dispatcher parameters) win; params
+            # remains the fallback for clients that pack every action-specific
+            # field under params.
+            header_color=header_color or extra.get("header_color"),
+            footer_color=footer_color or extra.get("footer_color"),
+            first_band_color=first_band_color or extra.get("first_band_color"),
+            second_band_color=second_band_color or extra.get("second_band_color"),
         )
     elif action == "banding_clear":
         return await dispatch.banding_clear(

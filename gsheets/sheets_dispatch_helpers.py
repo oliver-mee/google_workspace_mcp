@@ -996,16 +996,20 @@ async def banding_set(
 ) -> str:
     """Apply alternating row colors to range_name."""
     _require(range_name, "range_name", "banding_set")
-    rows_properties = _build_table_rows_properties(
-        header_color=header_color,
-        footer_color=footer_color,
-        first_band_color=first_band_color,
-        second_band_color=second_band_color,
-    )
+    # Color params may be supplied at the top level OR inside params (see
+    # sheets_manage dispatch); pick them up from both so either path works.
+    provided = {
+        k: v for k, v in (("header_color", header_color),
+                            ("footer_color", footer_color),
+                            ("first_band_color", first_band_color),
+                            ("second_band_color", second_band_color)) if v
+    }
+    rows_properties = _build_table_rows_properties(**provided)
     if not rows_properties:
         raise UserInputError(
-            "Provide at least one of: header_color, footer_color, "
-            "first_band_color, second_band_color."
+            "banding_set requires at least one of: header_color, footer_color, "
+            "first_band_color, second_band_color. Pass them at the top level of "
+            "sheets_manage or inside the `params` object. Use the form '#RRGGBB'."
         )
     sheets = await _get_sheet_properties(service, spreadsheet_id)
     grid_range = _parse_a1_range(range_name, sheets)
@@ -1575,6 +1579,16 @@ def _datasource_table_sync_state(dst: dict) -> str:
     """Sync state of a DataSourceTable, from dataExecutionStatus.state."""
     status = dst.get("dataExecutionStatus") or {}
     return status.get("state", "?")
+
+
+# Fields mask for the data source tables call. We only request the fields
+# Google is guaranteed to accept on every sheet — the conditional
+# dataSourceTables collection is intentionally omitted because it only
+# exists on sheets with Connected Sheets data sources; an explicit mask
+# for its leaf fields triggers a 400 "invalid field" on sheets without
+# one. Google returns dataSourceTables in the Sheet field on the response
+# regardless of whether it appears in the fields mask, when present.
+DATASOURCE_TABLE_DESCRIBE_FIELDS = "sheets(properties(title),tables)"
 
 
 async def datasource_describe(service, spreadsheet_id: str) -> str:
