@@ -17,6 +17,35 @@ The version is the single package version in `pyproject.toml` (mirrored in
 `tools/list` after reconnecting or when the server version changes; a GPT's own
 "Version name" (for example, `dev mode`) is separate connector metadata.
 
+## 1.29.0 — 2026-09-02
+
+Bugfix release driven by the ChatGPT connector E2E test (95 invocations,
+87 passed). Fixes:
+
+- **banding_set atomicity** — a successful `addBanding` mutation can never be
+  surfaced as an error: reply parsing is defensive and a missing
+  `bandedRangeId` is recovered by re-reading the sheet. Errors remain
+  pre-flight only.
+- **datasource actions unblocked** — `datasource_describe` and
+  `datasource_table_describe` sent invalid Sheets fields masks
+  (`dataSources.type`, `dataSourceTables.syncState` — neither exists in the
+  v4 discovery schema). Masks now use only valid fields
+  (`dataSources(dataSourceId,spec,sheetId)` and
+  `dataSourceTables(dataSourceId,columnSelectionType,columns,dataExecutionStatus)`),
+  with sync state derived from `dataExecutionStatus.state`, and a discovery-
+  aligned lockstep test.
+- **modify_sheet_values cell schema** — `values` accepted only strings in the
+  generated schema; nested cells now allow strings, numbers, booleans, and
+  null (runtime already handled them).
+- **chart_create rectangular ranges** — a multi-column range is translated the
+  way the Sheets UI does: first column = domain (labels), remaining columns =
+  series. Single-column ranges keep the legacy shape that already worked.
+- **read_sheet_values note/hyperlink-only cells** — the "No data found" early
+  exit no longer discards fetched notes/hyperlinks when the range has values
+  only in metadata.
+
+Eleven regression tests (tests/gsheets/test_sheets_1_29_fixes.py).
+
 ## 1.28.0 — 2026-09-02
 
 - Shipped the Chat dispatcher pair (`chat_read` + `chat_manage`, 4 actions

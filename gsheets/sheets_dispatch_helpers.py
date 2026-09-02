@@ -798,13 +798,47 @@ def _build_basic_chart_spec(
     legend_position: str,
     data_grid: dict,
 ) -> dict:
+    """Build a basicChart spec over data_grid.
+
+    A rectangular range (multiple columns) is translated the way the Sheets
+    UI does: the first column becomes the domain (labels), each remaining
+    column becomes a series. A single-column range keeps the legacy
+    single-source shape (Google accepts it; the one-column E2E case passed).
+    """
+    start_col = data_grid.get("startColumnIndex", 0)
+    end_col = data_grid.get("endColumnIndex", start_col + 1)
+    column_count = max(1, end_col - start_col)
+
+    if column_count <= 1:
+        domain_sources = [data_grid]
+        series_sources = [data_grid]
+    else:
+        domain_sources = [
+            {
+                **data_grid,
+                "startColumnIndex": start_col,
+                "endColumnIndex": start_col + 1,
+            }
+        ]
+        series_sources = [
+            {
+                **data_grid,
+                "startColumnIndex": start_col + k,
+                "endColumnIndex": start_col + k + 1,
+            }
+            for k in range(1, column_count)
+        ]
+
     spec: dict = {
         "basicChart": {
             "chartType": chart_type,
             "legendPosition": legend_position,
             "headerCount": 1,
-            "domains": [{"domain": {"sourceRange": {"sources": [data_grid]}}}],
-            "series": [{"series": {"sourceRange": {"sources": [data_grid]}}}],
+            "domains": [{"domain": {"sourceRange": {"sources": domain_sources}}}],
+            "series": [
+                {"series": {"sourceRange": {"sources": [source]}}}
+                for source in series_sources
+            ],
         }
     }
     if title:
@@ -989,10 +1023,28 @@ async def banding_set(
             }
         ],
     )
-    replies = response.get("replies") or [{}]
-    banding_id = (
-        replies[0].get("addBanding", {}).get("bandedRange", {}).get("bandedRangeId")
-    )
+    # Atomicity: once the batchUpdate call has succeeded the mutation HAS
+    # happened — never surface an error from response introspection. If the
+    # reply omits the bandedRangeId, verify it by re-reading the sheet.
+    banding_id = None
+    try:
+        replies = response.get("replies") or [{}]
+        banding_id = (
+            replies[0]
+            .get("addBanding", {})
+            .get("bandedRange", {})
+            .get("bandedRangeId")
+        )
+    except (AttributeError, IndexError, TypeError):
+        banding_id = None
+    if banding_id is None:
+        try:
+            banded = await _fetch_banded_ranges(service, spreadsheet_id)
+            banding_id = banded[0].get("bandedRangeId") if banded else None
+        except Exception as exc:  # verification is best-effort, never fatal
+            logger.warning(
+                "[banding_set] Banding applied but read-back failed: %s", exc
+            )
     return (
         f"Applied banding to '{range_name}' in spreadsheet {spreadsheet_id}. "
         f"Banded range ID: {banding_id if banding_id is not None else '(unavailable)'}."
@@ -1507,13 +1559,31 @@ async def export_csv(
     )
 
 
+# Field masks for spreadsheet metadata reads. Keep the tokens aligned with the
+# Sheets v4 discovery schema (see tests/gsheets/test_sheets_1_29_fixes.py):
+# DataSource has dataSourceId/spec/sheetId (no `type`); DataSourceTable has
+# dataSourceId/columnSelectionType/columns/dataExecutionStatus (no `syncState`).
+DATASOURCE_DESCRIBE_FIELDS = "dataSources(dataSourceId,spec,sheetId)"
+DATASOURCE_TABLE_DESCRIBE_FIELDS = (
+    "sheets(properties(title),"
+    "dataSourceTables(dataSourceId,columnSelectionType,columns,dataExecutionStatus),"
+    "tables)"
+)
+
+
+def _datasource_table_sync_state(dst: dict) -> str:
+    """Sync state of a DataSourceTable, from dataExecutionStatus.state."""
+    status = dst.get("dataExecutionStatus") or {}
+    return status.get("state", "?")
+
+
 async def datasource_describe(service, spreadsheet_id: str) -> str:
     """List Connected Sheets data sources (BigQuery etc.)."""
     spreadsheet = await asyncio.to_thread(
         service.spreadsheets()
         .get(
             spreadsheetId=spreadsheet_id,
-            fields="dataSources(dataSourceId,type,spec)",
+            fields=DATASOURCE_DESCRIBE_FIELDS,
         )
         .execute
     )
@@ -1553,7 +1623,7 @@ async def datasource_table_describe(
             spreadsheetId=spreadsheet_id,
             ranges=[target],
             includeGridData=False,
-            fields="sheets(properties(title),dataSourceTables(dataSourceId,columnSelectionType,columns,syncState),tables)",
+            fields=DATASOURCE_TABLE_DESCRIBE_FIELDS,
         )
         .execute
     )
@@ -1564,7 +1634,7 @@ async def datasource_table_describe(
             found = True
             lines.append(
                 f"- dataSourceId {dst.get('dataSourceId', '?')}, "
-                f"sync state: {dst.get('syncState', '?')}, "
+                f"sync state: {_datasource_table_sync_state(dst)}, "
                 f"columns selected: {len(dst.get('columns', []) or [])}"
             )
     if not found:
