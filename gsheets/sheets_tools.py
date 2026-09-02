@@ -2527,9 +2527,20 @@ SHEETS_DELETE_ACTIONS = (
     "delete_tab",
 )
 
+# FastMCP publishes the decorator description to clients; it does not publish
+# the full Python docstring's action section. Keep these contracts compact but
+# explicit so agents can select an action and supply its required fields without
+# guessing or first triggering a validation error.
+SHEETS_READ_DESCRIPTION = """Read-only Google Sheets operations. Common required fields: spreadsheet_id and action. Use range_name as an A1 range such as 'Sheet1!A1:D20'. Actions and required fields: table_get requires table_id or table_name; named_range_get requires params.name; named_range_list requires none; chart_get requires params.chart_id; chart_list requires none; banding_list requires none; validation_get requires range_name; links_get requires range_name; metadata and get require none; export accepts optional range_name and returns CSV; datasource_describe requires none; datasource_table_describe accepts optional range_name. Use this tool only for reads."""
+
+SHEETS_MANAGE_DESCRIPTION = """Non-destructive Google Sheets writes. Common required fields: spreadsheet_id and action. Use range_name for A1 ranges and params for action-specific fields. Required fields by action: table_create requires range_name and table_name; optional column_properties is a list of {columnName, columnType, values}; format_range requires range_name plus at least one style field; conditional_format requires range_name and params.operation (add_rule or delete_rule), with condition_type/condition_values/colors for add_rule or rule_index for delete_rule; resize_dimensions requires sheet_name plus at least one sizing/freeze/hide/insert field in params; move_rows requires sheet_name, destination_sheet, params.start_row and params.end_row; tab_add requires params.new_tab_name; tab_rename requires sheet_name and params.new_tab_name; tab_reorder requires sheet_name and params.index; merge and unmerge require range_name; find_replace requires params.find and params.replacement; named_range_add requires range_name and params.name; named_range_delete requires params.name or params.named_range_id; sheet_copy requires sheet_name and params.destination_spreadsheet_id; copy_paste requires params.source_range and params.destination_range; chart_create requires params.data_range; chart_update requires params.chart_id plus a field to change; chart_delete requires params.chart_id; banding_set requires range_name plus at least one color; banding_clear requires params.banded_range_id; validation_set requires range_name and params.condition_type; validation_clear requires range_name; note_set requires range_name and params.note; filter_set requires range_name unless params.clear=true; links_set requires range_name and params.url; batch_update requires params.requests, a non-empty list of non-destructive Sheets API request objects. Do not use batch_update to delete data; use sheets_delete."""
+
+SHEETS_DELETE_DESCRIPTION = """Data-destructive Google Sheets operations. Common required fields: spreadsheet_id and action. This tool requires sheets:full, is denied at sheets:manage, and may be disabled independently. table_clear requires table_id or table_name and clears table rows; table_delete requires table_id or table_name and removes the native table; range_clear requires range_name and clears values while retaining formatting; delete_dimension requires sheet_name plus exactly one of params.delete_rows, params.delete_row_range, or params.delete_columns; delete_tab requires sheet_name and removes the entire tab. Ask for confirmation before using this tool unless cleanup was explicitly authorized."""
+
 
 @server.tool(
     title="Read Sheets",
+    description=SHEETS_READ_DESCRIPTION,
     annotations=ToolAnnotations(
         readOnlyHint=True,
         destructiveHint=False,
@@ -2666,6 +2677,7 @@ async def sheets_read(
 
 @server.tool(
     title="Manage Sheets",
+    description=SHEETS_MANAGE_DESCRIPTION,
     annotations=ToolAnnotations(
         readOnlyHint=False,
         destructiveHint=False,
@@ -3071,6 +3083,7 @@ async def sheets_manage(
 
 @server.tool(
     title="Delete From Sheets",
+    description=SHEETS_DELETE_DESCRIPTION,
     annotations=ToolAnnotations(
         readOnlyHint=False,
         destructiveHint=True,
