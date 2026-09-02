@@ -42,16 +42,18 @@ def test_sheets_dispatchers_publish_action_contracts():
 import asyncio
 import json
 import gsheets.sheets_tools  # noqa: F401
+import gchat.chat_tools  # noqa: F401
 from core.server import server
 
 async def main():
     tools = {tool.name: tool for tool in await server.list_tools()}
-    names = ["sheets_read", "sheets_manage", "sheets_delete"]
+    names = ["sheets_read", "sheets_manage", "sheets_delete", "chat_read", "chat_manage"]
     print(json.dumps({
         name: {
             "description": tools[name].description,
             "required": tools[name].parameters["required"],
             "properties": list(tools[name].parameters["properties"]),
+            "action_enum": tools[name].parameters["properties"].get("action", {}).get("enum"),
         }
         for name in names
     }))
@@ -82,6 +84,8 @@ asyncio.run(main())
     read = payload["sheets_read"]
     manage = payload["sheets_manage"]
     delete = payload["sheets_delete"]
+    chat_read = payload["chat_read"]
+    chat_manage = payload["chat_manage"]
 
     assert "table_get requires table_id or table_name" in (read["description"] or "")
     assert "export accepts optional range_name" in (read["description"] or "")
@@ -103,3 +107,23 @@ asyncio.run(main())
     # Progressive-disclosure params are published on the read dispatcher
     for param in ("map", "navigate", "head", "skip_tokens"):
         assert param in read["properties"], f"{param} missing from sheets_read"
+
+    # Chat dispatcher pair (chat_read + chat_manage) publishes its contract
+    assert "find_space" in (chat_read["description"] or "")
+    assert "delete_reaction" in (chat_manage["description"] or "")
+    for tool in (chat_read, chat_manage):
+        assert "spreadsheet_id" not in tool["properties"]  # chat has no sheets fields
+        assert "action" in tool["required"]
+        assert tool["action_enum"]  # action enum is published
+    assert set(chat_read["action_enum"]) == {
+        "find_space",
+        "list_spaces",
+        "list_reactions",
+        "list_threads",
+    }
+    assert set(chat_manage["action_enum"]) == {
+        "create_space",
+        "dm_space",
+        "create_reaction",
+        "delete_reaction",
+    }

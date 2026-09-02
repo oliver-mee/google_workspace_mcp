@@ -108,7 +108,9 @@ chat:
   extended:
     - list_spaces
     - download_chat_attachment
-  complete: []
+    - chat_read
+  complete:
+    - chat_manage
 
 forms:
   core:

@@ -8,7 +8,7 @@ import base64
 import logging
 import asyncio
 import ssl
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Literal
 
 import httpx
 from googleapiclient.errors import HttpError
@@ -19,6 +19,17 @@ from mcp.types import ToolAnnotations
 from auth.service_decorator import require_google_service, require_multiple_services
 from core.server import server
 from core.utils import TransientNetworkError, handle_http_errors
+
+from gchat.chat_helpers import (
+    list_chat_spaces,
+    find_chat_space,
+    create_chat_space,
+    find_or_create_dm_space,
+    create_chat_reaction,
+    delete_chat_reaction,
+    list_chat_reactions,
+    list_chat_threads,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -744,3 +755,192 @@ async def download_chat_attachment(
         f"[download_chat_attachment] Saved {size_kb:.1f} KB attachment to {result.path}"
     )
     return "\n".join(result_lines)
+
+
+CHAT_READ_ACTIONS = (
+    "find_space",
+    "list_spaces",
+    "list_reactions",
+    "list_threads",
+)
+
+CHAT_MANAGE_ACTIONS = (
+    "create_space",
+    "dm_space",
+    "create_reaction",
+    "delete_reaction",
+)
+
+
+# FastMCP publishes the decorator description to clients; it does not publish
+# the full Python docstring's action section. Keep these contracts explicit so
+# agents can select an action and supply its required fields without guessing.
+CHAT_READ_DESCRIPTION = """Read-only Google Chat operations. Common required fields: user_google_email and action. Action required fields: find_space requires query (exact=true for whole-name match); list_spaces requires none (space_type all, room or dm; default all); list_reactions requires message_id (resource name like spaces/X/messages/Y); list_threads requires space_id (like spaces/X). Use this tool only for reads."""
+
+CHAT_MANAGE_DESCRIPTION = """Write Google Chat operations. Common required fields: user_google_email and action. Action required fields: create_space requires none (space_type SPACE or GROUP_CHAT; optional display_name); dm_space requires user_id (like users/123456789); create_reaction requires message_id and emoji_unicode; delete_reaction requires reaction_id (resource name). These actions need the write Chat scopes and are not available under the read-only tier."""
+
+
+@server.tool(
+    title="Read Chat",
+    description=CHAT_READ_DESCRIPTION,
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@require_google_service("chat", ["chat_read", "chat_spaces_readonly"])
+@handle_http_errors("chat_read", is_read_only=True, service_type="chat")
+async def chat_read(
+    service,
+    user_google_email: str,
+    action: Literal[
+        "find_space",
+        "list_spaces",
+        "list_reactions",
+        "list_threads",
+    ],
+    space_type: str = "all",
+    query: Optional[str] = None,
+    exact: bool = False,
+    max_results: int = 50,
+    message_id: Optional[str] = None,
+    space_id: Optional[str] = None,
+    page_size: int = 50,
+) -> str:
+    """
+    Read-only Google Chat operations: spaces, reactions and threads.
+
+    Dispatches one of several read-only chat operations. Requires only the
+    read-only Chat scopes, so it stays available in read-only deployments
+    (chat.messages.readonly + chat.spaces.readonly).
+
+    Actions:
+      - find_space: find spaces whose display name matches query (exact=True
+        for whole-name match).
+      - list_spaces: list all spaces (or filter by space_type: all, room, dm).
+      - list_reactions: list emoji reactions on a message.
+      - list_threads: list threads in a space (derived from the latest messages).
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        action (str): One of the actions listed above.
+        space_type (str): all, room or dm for list_spaces.
+        query (str): Display-name search term for find_space.
+        exact (bool): Whole-name match for find_space.
+        max_results (int): Cap for find_space results.
+        message_id (str): Message resource name (e.g. spaces/X/messages/Y) for list_reactions.
+        space_id (str): Space resource name (e.g. spaces/X) for list_threads.
+        page_size (int): Results per page for list operations.
+
+    Returns:
+        str: Human-readable result of the operation.
+    """
+    logger.info(f"[chat_read] Email: '{user_google_email}', action: '{action}'")
+
+    if action == "find_space":
+        if not query:
+            return "find_space requires a non-empty query."
+        return await find_chat_space(
+            service, query=query, exact=exact, max_results=max_results
+        )
+    elif action == "list_spaces":
+        return await list_chat_spaces(
+            service, page_size=page_size, space_type=space_type
+        )
+    elif action == "list_reactions":
+        if not message_id:
+            return "list_reactions requires message_id."
+        return await list_chat_reactions(
+            service, message_id=message_id, page_size=page_size
+        )
+    elif action == "list_threads":
+        if not space_id:
+            return "list_threads requires space_id (e.g. spaces/X)."
+        return await list_chat_threads(service, space_id=space_id, page_size=page_size)
+    else:
+        return f"Unknown action '{action}'. Valid: {', '.join(CHAT_READ_ACTIONS)}"
+
+
+@server.tool(
+    title="Manage Chat",
+    description=CHAT_MANAGE_DESCRIPTION,
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+@require_google_service("chat", ["chat_write", "chat_spaces"])
+@handle_http_errors("chat_manage", service_type="chat")
+async def chat_manage(
+    service,
+    user_google_email: str,
+    action: Literal[
+        "create_space",
+        "dm_space",
+        "create_reaction",
+        "delete_reaction",
+    ],
+    display_name: Optional[str] = None,
+    space_type: str = "SPACE",
+    user_id: Optional[str] = None,
+    message_id: Optional[str] = None,
+    emoji_unicode: Optional[str] = None,
+    reaction_id: Optional[str] = None,
+) -> str:
+    """
+    Write Google Chat operations: spaces, DMs and reactions.
+
+    Dispatches one of several write chat operations. Requires the write Chat
+    scopes (chat.messages + chat.spaces), so it loads only in full-permission
+    deployments and disappears under the read-only tier.
+
+    Actions:
+      - create_space: create a space. Set space_type to SPACE or GROUP_CHAT,
+        optionally with display_name.
+      - dm_space: find an existing direct-message space with the given user_id
+        (e.g. users/123456789) or create one if it does not exist.
+      - create_reaction: add an emoji reaction to a message.
+      - delete_reaction: remove a reaction by its resource name.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        action (str): One of the actions listed above.
+        display_name (str): Name for create_space.
+        space_type (str): SPACE or GROUP_CHAT for create_space.
+        user_id (str): Chat user resource name (e.g. users/123456789) for dm_space.
+        message_id (str): Message resource name (e.g. spaces/X/messages/Y) for reactions.
+        emoji_unicode (str): Emoji character for create_reaction.
+        reaction_id (str): Reaction resource name for delete_reaction.
+
+    Returns:
+        str: Human-readable result of the operation.
+    """
+    logger.info(f"[chat_manage] Email: '{user_google_email}', action: '{action}'")
+
+    if action == "create_space":
+        return await create_chat_space(
+            service,
+            display_name=display_name,
+            space_type=space_type,
+            external_user_allowed=False,
+        )
+    elif action == "dm_space":
+        if not user_id:
+            return "dm_space requires user_id (e.g. users/123456789)."
+        return await find_or_create_dm_space(service, user_id=user_id)
+    elif action == "create_reaction":
+        if not message_id or not emoji_unicode:
+            return "create_reaction requires message_id and emoji_unicode."
+        return await create_chat_reaction(
+            service, message_id=message_id, emoji_unicode=emoji_unicode
+        )
+    elif action == "delete_reaction":
+        if not reaction_id:
+            return "delete_reaction requires reaction_id."
+        return await delete_chat_reaction(service, reaction_id=reaction_id)
+    else:
+        return f"Unknown action '{action}'. Valid: {', '.join(CHAT_MANAGE_ACTIONS)}"

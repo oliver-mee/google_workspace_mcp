@@ -17,6 +17,21 @@ The version is the single package version in `pyproject.toml` (mirrored in
 `tools/list` after reconnecting or when the server version changes; a GPT's own
 "Version name" (for example, `dev mode`) is separate connector metadata.
 
+## 1.28.0 — 2026-09-02
+
+- Shipped the Chat dispatcher pair (`chat_read` + `chat_manage`, 4 actions
+  each) — the original 2026-08-28 dispatcher prototype that proved the
+  dispatcher + per-tool scope-gate pattern, previously uncommitted. Read
+  loads at read-only scopes (chat_read: find_space, list_spaces,
+  list_reactions, list_threads); write loads at chat_write + chat_spaces
+  (chat_manage: create_space, dm_space, create_reaction, delete_reaction).
+- Tier-wired: `chat_read` at chat extended, `chat_manage` at chat complete;
+  legacy Chat tools stay live during migration.
+- Published explicit client-visible descriptions for both dispatchers
+  (per-action required fields) — the same bug the sheets descriptions fixed.
+- 30 tests (tests/gchat), including schema-enum, scope-separation, and
+  dispatcher routing coverage.
+
 ## 1.27.0 — 2026-09-02
 
 - Added progressive disclosure to `sheets_read` `export` (reference implementation
