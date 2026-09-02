@@ -129,7 +129,12 @@ def configure_safe_logging():
 configure_safe_logging()
 
 # Check credentials directory permissions (skip in stateless mode)
-if not is_stateless_mode():
+_export_prepare_server = os.environ.get("WORKSPACE_MCP_PREPARE_SERVER", "1").lower() not in (
+    "0",
+    "false",
+    "no",
+)
+if _export_prepare_server and not is_stateless_mode():
     try:
         logger.info("Checking credentials directory permissions...")
         check_credentials_directory_permissions()
@@ -140,8 +145,10 @@ if not is_stateless_mode():
             "   Please ensure the service has write permissions to create/access the credentials directory"
         )
         sys.exit(1)
-else:
+elif _export_prepare_server:
     logger.info("🔍 Skipping credentials directory check (stateless mode)")
+else:
+    logger.info("Inspection mode: skipping credentials directory check")
 
 # Set transport mode for HTTP (FastMCP CLI defaults to streamable-http)
 set_transport_mode("streamable-http")
@@ -182,8 +189,13 @@ set_disabled_tools(resolve_disabled_tools())
 # Filter tools based on configuration
 filter_server_tools(server)
 
-# Configure authentication after scopes are known
-configure_server_for_http()
+# Configure authentication after scopes are known (skipped in inspection mode)
+if _export_prepare_server:
+    configure_server_for_http()
+else:
+    logger.info(
+        "Inspection mode (WORKSPACE_MCP_PREPARE_SERVER=0): skipping HTTP auth configuration."
+    )
 
 # Export server instance for FastMCP CLI (looks for 'mcp', 'server', or 'app')
 mcp = server

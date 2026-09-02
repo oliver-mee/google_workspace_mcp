@@ -17,6 +17,20 @@ The version is the single package version in `pyproject.toml` (mirrored in
 `tools/list` after reconnecting or when the server version changes; a GPT's own
 "Version name" (for example, `dev mode`) is separate connector metadata.
 
+## 1.27.0 — 2026-09-02
+
+- Added progressive disclosure to `sheets_read` `export` (reference implementation
+  of the map/navigate/extract contract): `map=true` returns a token-bounded
+  block index; `navigate='<block>'`/`'<block>.<row>'` fetches content at an
+  ordinal; `head=<tokens>` (+ `navigate`) bounds a window and returns a
+  `next_call` hint; `skip_tokens=<tokens>` continues it. PASSTHROUGH when all
+  four are omitted; token counts are estimates (~4 chars/token).
+- Made the FastMCP Cloud entrypoint inspectable: `WORKSPACE_MCP_PREPARE_SERVER=0`
+  skips import-time credentials/auth wiring so `fastmcp inspect`/`list` work
+  without OAuth secrets; default behavior unchanged.
+- Added `scripts/dump_mcp_contract.py` (registered-surface probe) and
+  version-lockstep contract tests.
+
 ## 1.26.0 — 2026-09-02
 
 - Added the Sheets dispatcher surface:

@@ -1,29 +1,39 @@
 """Contract tests for MCP versioning and Sheets dispatcher metadata."""
 
 import os
+import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("path", [REPO_ROOT / "pyproject.toml", REPO_ROOT / "uv.lock"])
-def test_release_version_is_1_26_0(path):
-    text = path.read_text()
-    assert 'version = "1.26.0"' in text
+def _release_version() -> str:
+    with (REPO_ROOT / "pyproject.toml").open("rb") as fh:
+        return tomllib.load(fh)["project"]["version"]
+
+
+def test_release_version_lockstep():
+    """pyproject, uv.lock, and CHANGELOG must agree on the release version."""
+    version = _release_version()
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version)
+    # uv.lock: the editable workspace package stanza
+    lock = (REPO_ROOT / "uv.lock").read_text()
+    assert f'name = "workspace-mcp"\nversion = "{version}"' in lock
+    # CHANGELOG: a dated entry for the current version
+    changelog = (REPO_ROOT / "CHANGELOG.md").read_text()
+    assert re.search(rf"^## {re.escape(version)} — \d{{4}}-\d{{2}}-\d{{2}}", changelog, re.M)
 
 
 def test_changelog_documents_client_refresh_contract():
     text = (REPO_ROOT / "CHANGELOG.md").read_text()
     assert "serverInfo.version" in text
     assert "tools/list" in text
-    assert "1.26.0" in text
+    assert _release_version() in text
 
 
 def test_sheets_dispatchers_publish_action_contracts():
@@ -75,6 +85,9 @@ asyncio.run(main())
 
     assert "table_get requires table_id or table_name" in (read["description"] or "")
     assert "export accepts optional range_name" in (read["description"] or "")
+    assert "map=true returns a token-bounded block index" in (
+        read["description"] or ""
+    )
     assert "table_create requires range_name and table_name" in (
         manage["description"] or ""
     )
@@ -86,3 +99,7 @@ asyncio.run(main())
         assert "spreadsheet_id" in tool["required"]
         assert "action" in tool["required"]
         assert "params" in tool["properties"]
+
+    # Progressive-disclosure params are published on the read dispatcher
+    for param in ("map", "navigate", "head", "skip_tokens"):
+        assert param in read["properties"], f"{param} missing from sheets_read"

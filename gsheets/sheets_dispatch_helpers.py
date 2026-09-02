@@ -1460,8 +1460,20 @@ async def export_csv(
     service,
     spreadsheet_id: str,
     range_name: Optional[str] = None,
+    map_flag: bool = False,
+    navigate: Optional[str] = None,
+    head: Optional[int] = None,
+    skip_tokens: int = 0,
 ) -> str:
-    """Export range_name (or the first sheet) as CSV text."""
+    """Export range_name (or the first sheet) as CSV text.
+
+    Optional progressive-disclosure controls (see gsheets/disclosure.py):
+    map=True returns a token-bounded block index; navigate='<block>' or
+    '<block>.<row>' returns content at that ordinal; head=<tokens> (with
+    navigate) returns a token-bounded window plus a next_call hint;
+    skip_tokens=<tokens> continues a window. With none of these set the CSV
+    is returned unchanged (PASSTHROUGH).
+    """
     target = range_name
     if not target:
         sheets = await _get_sheet_properties(service, spreadsheet_id)
@@ -1484,7 +1496,15 @@ async def export_csv(
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerows(values)
-    return buffer.getvalue()
+    csv_text = buffer.getvalue()
+
+    from gsheets import disclosure
+
+    if not (map_flag or navigate is not None or head is not None or skip_tokens):
+        return csv_text
+    return disclosure.export_response(
+        csv_text, map_flag=map_flag, navigate=navigate, head=head, skip_tokens=skip_tokens
+    )
 
 
 async def datasource_describe(service, spreadsheet_id: str) -> str:
