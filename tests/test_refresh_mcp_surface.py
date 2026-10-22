@@ -158,6 +158,11 @@ def google_service():
             {"name": "spaces/s1/messages/m1/reactions/r1", "emoji": {"unicode": "x"}}
         ]
     }
+    service.comments().create().execute.return_value = {
+        "id": "c1",
+        "author": {"displayName": "Synthetic"},
+        "createdTime": "2026-10-22T00:00:00Z",
+    }
     service.presentations().batchUpdate().execute.return_value = {"replies": [{}]}
     service.reset_mock()
     return service
@@ -204,6 +209,8 @@ def native(monkeypatch):
                 "read_sheet_values",
                 "modify_sheet_values",
                 "get_spreadsheet_info",
+                "manage_spreadsheet_comment",
+                "manage_presentation_comment",
                 "list_sheet_tables",
                 "format_sheet_range",
                 "resize_sheet_dimensions",
@@ -794,3 +801,29 @@ def test_permission_unions_do_not_bypass_delete_restrictions(native):
             )
         )
         service.spreadsheets().values().clear.assert_not_called()
+
+
+def test_narrow_scope_profiles_preserve_comment_writers(native):
+    create, _, built = native
+    with create("manage") as client:
+        names = {t["name"] for t in rpc(client, "tools/list")["result"]["tools"]}
+        assert {"manage_spreadsheet_comment", "manage_presentation_comment"} <= names
+        success(
+            call(
+                client,
+                "manage_spreadsheet_comment",
+                spreadsheet_id="ss1",
+                action="create",
+                comment_content="Synthetic note",
+            )
+        )
+        success(
+            call(
+                client,
+                "manage_presentation_comment",
+                presentation_id="p1",
+                action="create",
+                comment_content="Synthetic note",
+            )
+        )
+    assert all(email == "alice@example.test" for _, email in built)

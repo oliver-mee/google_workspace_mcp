@@ -115,7 +115,7 @@ def create_comment_tools(
             )
 
         # Use full Drive scope so comment operations remain visible to collaborators.
-        @require_google_service("drive", "drive")
+        @require_google_service("drive", "drive_file")
         @handle_http_errors(manage_func_name, service_type="drive")
         async def manage_comment(
             service,
@@ -153,14 +153,17 @@ def create_comment_tools(
                 service, app_name, spreadsheet_id, max_comments=max_comments
             )
 
-        # Use full Drive scope so comment operations remain visible to collaborators.
-        # Sheets batchUpdate also accepts it, so cell comments need no extra grant.
+        # File comments use app-authorized Drive access; cell comments use Sheets write.
         @require_multiple_services(
             [
-                {"service_type": "drive", "scopes": "drive", "param_name": "service"},
+                {
+                    "service_type": "drive",
+                    "scopes": "drive_file",
+                    "param_name": "service",
+                },
                 {
                     "service_type": "sheets",
-                    "scopes": "drive",
+                    "scopes": "sheets_write",
                     "param_name": "sheets_service",
                 },
             ]
@@ -213,7 +216,7 @@ def create_comment_tools(
             )
 
         # Use full Drive scope so comment operations remain visible to collaborators.
-        @require_google_service("drive", "drive")
+        @require_google_service("drive", "drive_file")
         @handle_http_errors(manage_func_name, service_type="drive")
         async def manage_comment(
             service,

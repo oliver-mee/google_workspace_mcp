@@ -8,7 +8,7 @@ onto clean upstream branches.
 
 | Patch | Reason and removal condition |
 | --- | --- |
-| Narrow Drive OAuth scopes | Use `drive.readonly` plus `drive.file`, including the Apps Script project-delete path. Remove when upstream offers this policy. Files lacking an app grant remain unwritable. Upstream service-account/DWD scope widening is a separate, unchanged mode. |
+| Narrow Drive OAuth scopes | Use `drive.readonly` plus `drive.file`, including comment writers and the Apps Script project-delete path. Remove when upstream offers this policy. Files lacking an app grant remain unwritable. Upstream service-account/DWD scope widening is a separate, unchanged mode. |
 | Sheets gap dispatchers | Keep 8 read, 12 manage and 2 delete actions for charts, native table creation/removal, Connected Sheets, formatting inspection, CSV navigation, cross-spreadsheet copies, find/replace, banding, general validation, notes and filters. Remove individual actions when equivalent upstream tools cover them. |
 | Upstream table/metadata reads | Extend `list_sheet_tables` with selection and typed-column/dropdown detail; include named ranges and timezone in `get_spreadsheet_info`. These replace duplicate read actions. |
 | Action permission guards | `sheets:manage` excludes explicit clears, tab/row/column/table deletion, row moves and value-discarding merges. Mixed upstream tools enforce this at invocation; full-only tools are filtered from registration. Ordinary edits can overwrite values. Metadata removal stays available. There is no raw Sheets batch tool. `chat:manage` excludes reaction deletion. |
