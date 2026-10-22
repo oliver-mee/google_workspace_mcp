@@ -20,7 +20,13 @@ onto clean upstream branches.
 Gap action parameters are supplied in `params`. Read
 `sheets://actions/{action}` to inspect a Sheets action's fields and defaults.
 For CSV, `params.map=true` yields a block index, `navigate="block.row"` selects
-a logical CSV record, and `head`/`skip_tokens` bound continuation windows.
+a logical CSV record, and `head`/`skip_tokens` bound continuation windows. Map
+pages, including their JSON metadata, stay below 2,000 estimated tokens; follow
+`next_call` (`map=true`, `map_start=block`) for every remaining block, merging it
+into the existing export params to retain range_name. Conflicting
+native table ID/name selectors are rejected; an unknown ID never falls back to a
+name. Chart creation/type changes support basic charts only; PIE is rejected
+before mutation because it requires a different Google ChartSpec branch.
 Chat named-space creation requires a display name and rejects group-chat import
 mode, which this user-OAuth surface does not support.
 

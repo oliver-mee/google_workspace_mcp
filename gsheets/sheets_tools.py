@@ -3179,7 +3179,7 @@ manage_spreadsheet_comment = _comment_tools["manage_comment"]
 
 @server.tool(
     title="Read Sheets Gaps",
-    description="Sheets gap operations. All action-specific fields go in params. Use upstream tools for values, tabs, named ranges, formatting and dimension changes. Actions: chart_get, chart_list, banding_list, validation_get, read_format, export, datasource_describe, datasource_table_describe. For export: params accepts range_name, map=true, navigate=block or block.row, head=tokens, skip_tokens. Token estimates use four characters per token. Use sheets_action_contract to inspect parameter requirements.",
+    description="Sheets gap operations. All action-specific fields go in params. Use upstream tools for values, tabs, named ranges, formatting and dimension changes. Actions: chart_get, chart_list, banding_list, validation_get, read_format, export, datasource_describe, datasource_table_describe. For export: params accepts range_name, map=true, map_start=block (merge next_call into params for more map pages), navigate=block or block.row, head=tokens, skip_tokens. Token estimates use four characters per token. Use sheets_action_contract to inspect parameter requirements.",
     annotations=ToolAnnotations(
         readOnlyHint=True,
         destructiveHint=False,

@@ -12,8 +12,10 @@ approximations are used deliberately and documented as such.
 
 Layer semantics (all optional; absent params = PASSTHROUGH, unchanged output):
 
-- ``map=True``: ordered block index of the artifact, always < 2,000 estimated
-  tokens. Block lines read ``{ordinal} {desc} ({est}t) - "{preview}"``.
+- ``map=True``: paginated block index of the artifact, always < 2,000 estimated
+  tokens for the full JSON response. Merge next_call into the export params to
+  retain the selected range while paging. Block lines read
+  ``{ordinal} {desc} ({est}t) - "{preview}"``.
   Ordinals are blocks ``0..N-1``; block ``b`` row ``r`` is ``b.r``.
 - ``navigate="b"`` or ``navigate="b.r"``: full content at that ordinal.
 - ``head=N`` (with navigate): first N estimated tokens of that ordinal's
@@ -33,7 +35,7 @@ from typing import List, Optional, Tuple
 
 from core.utils import UserInputError
 
-#: Rows per map block. Keeps map_text bounded for wide sheets.
+#: Rows per block. Map pagination bounds the serialized response separately.
 BLOCK_SIZE = 25
 #: Estimated token budget guarantee for map responses.
 MAP_TOKEN_BUDGET = 2000
@@ -63,7 +65,7 @@ def _block_bounds(csv_text: str) -> Tuple[int, int, int]:
 
 
 def _preview(line: str, cap: int = 60) -> str:
-    text = line.strip()
+    text = line.strip().replace("\r", "\\r").replace("\n", "\\n")
     return text[:cap] + ("..." if len(text) > cap else "")
 
 
@@ -107,45 +109,61 @@ def _resolve_ordinal(csv_text: str, ordinal: str) -> Tuple[int, Optional[int]]:
     return block, row
 
 
-def build_map(csv_text: str) -> str:
-    """Layer 1 - MAP: ordinal block structure, guaranteed < 2,000 est. tokens."""
+def build_map(csv_text: str, map_start: int = 0) -> str:
+    """Return a page of fixed block ordinals within the serialized response budget.
+
+    Count the full JSON (including escaped previews and continuation metadata),
+    not just map_text. Fixed 25-record blocks keep navigation ordinals stable.
+    """
     rows = _rows(csv_text)
-    total, blocks, total_est = _block_bounds(csv_text)
-    if not total:
+    total = len(rows)
+    blocks = math.ceil(total / BLOCK_SIZE)
+    if isinstance(map_start, bool) or not isinstance(map_start, int) or map_start < 0:
+        raise UserInputError("map_start must be a non-negative block ordinal.")
+    if map_start >= blocks and (total or map_start):
+        raise UserInputError(f"map_start must be less than total_blocks ({blocks}).")
+    total_est = estimate_tokens(csv_text) if total else 0
+
+    def response(lines, next_block):
+        next_start = next_block if next_block < blocks else None
         return json.dumps(
             {
                 "action": "export",
                 "mode": "map",
-                "total_blocks": 0,
-                "total_rows": 0,
-                "total_est_tokens": 0,
-                "over_budget": False,
-                "map_text": "The export result is empty.",
+                "total_blocks": blocks,
+                "total_rows": total,
+                "total_est_tokens": total_est,
+                "over_budget": total_est > MAP_TOKEN_BUDGET,
+                "map_start": map_start,
+                "next_map_start": next_start,
+                "next_call": json.dumps({"map": True, "map_start": next_start})
+                if next_start is not None
+                else None,
+                "map_text": "\n".join(lines)
+                if total
+                else "The export result is empty.",
+                "usage": "Merge next_call into existing export params for the next map page. Navigate any block with navigate='<block>' or '<block>.<row>'; add head=<tokens> to bound content.",
             }
         )
+
     lines = []
-    for b in range(blocks):
-        start = b * BLOCK_SIZE
+    result = response(lines, map_start)
+    for block in range(map_start, blocks):
+        start = block * BLOCK_SIZE
         end = min(start + BLOCK_SIZE, total)
         block_text = "\n".join(rows[start:end])
         preview = _preview(rows[start])
-        lines.append(
-            f"{b} rows {start + 1}-{end} ({estimate_tokens(block_text)}t)"
-            f"{' — ' + chr(34) + preview + chr(34) if preview else ''}"
-        )
-    return json.dumps(
-        {
-            "action": "export",
-            "mode": "map",
-            "total_blocks": blocks,
-            "total_rows": total,
-            "total_est_tokens": total_est,
-            "over_budget": total_est > MAP_TOKEN_BUDGET,
-            "map_text": "\n".join(lines),
-            "usage": "Call navigate='<block>' (or '<block>.<row>') to fetch content; "
-            "add head=<tokens> to bound the window.",
-        }
-    )
+        line = f"{block} rows {start + 1}-{end} ({estimate_tokens(block_text)}t)"
+        if preview:
+            line += f' — "{preview}"'
+        candidate = response([*lines, line], block + 1)
+        if estimate_tokens(candidate) >= MAP_TOKEN_BUDGET:
+            if not lines:
+                raise UserInputError("Map response metadata exceeds the token budget.")
+            break
+        lines.append(line)
+        result = candidate
+    return result
 
 
 def _content_at(csv_text: str, ordinal: str) -> str:
@@ -218,6 +236,7 @@ def export_response(
     navigate: Optional[str] = None,
     head: Optional[int] = None,
     skip_tokens: int = 0,
+    map_start: int = 0,
 ) -> str:
     """Route an export result through the disclosure layers.
 
@@ -225,9 +244,13 @@ def export_response(
     With no disclosure parameters supplied this is a PASSTHROUGH (returns the
     CSV unchanged, preserving the legacy behavior).
     """
-    if not (map_flag or navigate is not None or head is not None or skip_tokens):
+    if not (
+        map_flag or map_start or navigate is not None or head is not None or skip_tokens
+    ):
         return csv_text
 
+    if map_start and not map_flag:
+        raise UserInputError("map_start requires map=true.")
     if map_flag and navigate is not None:
         raise UserInputError("map and navigate are mutually exclusive.")
     if map_flag and head is not None:
@@ -238,7 +261,7 @@ def export_response(
         raise UserInputError("skip_tokens requires head and navigate.")
 
     if map_flag:
-        return build_map(csv_text)
+        return build_map(csv_text, map_start=map_start)
     if navigate is None:
         raise UserInputError(
             "navigate is required for disclosure modes (or use map=true)."

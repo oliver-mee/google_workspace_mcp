@@ -264,18 +264,30 @@ async def _find_table(
     table_id: Optional[str] = None,
     table_name: Optional[str] = None,
 ) -> dict:
-    """Locate one table by id (preferred) or exact name."""
+    """Locate by ID or exact name; supplied selectors must agree."""
+    if table_id is not None and not table_id.strip():
+        raise UserInputError("table_id must not be blank.")
+    if table_name is not None and not table_name.strip():
+        raise UserInputError("table_name must not be blank.")
     if not table_id and not table_name:
         raise UserInputError(
             f"'table_id' (or 'table_name') is required for the '{action}' action. "
             "Use list_sheet_tables to find it."
         )
     tables = await _fetch_tables(service, spreadsheet_id)
-    for table in tables:
-        if table_id and table.get("tableId") == table_id:
-            return table
-        if table_name and table.get("name") == table_name:
-            return table
+    # An explicit ID is authoritative: never fall back to another table's name.
+    if table_id:
+        for table in tables:
+            if table.get("tableId") == table_id:
+                if table_name and table.get("name") != table_name:
+                    raise UserInputError(
+                        "table_id and table_name identify different tables."
+                    )
+                return table
+    else:
+        for table in tables:
+            if table.get("name") == table_name:
+                return table
     ref = table_id or table_name
     raise UserInputError(
         f"No table matching '{ref}' in spreadsheet {spreadsheet_id}. "
@@ -538,7 +550,6 @@ CHART_TYPES = {
     "COLUMN",
     "SCATTER",
     "COMBO",
-    "PIE",
     "STEPPED_AREA",
 }
 
@@ -631,6 +642,10 @@ def _build_basic_chart_spec(
     column becomes a series. A single-column range keeps the legacy
     single-source shape (Google accepts it; the one-column E2E case passed).
     """
+    if chart_type not in CHART_TYPES:
+        raise UserInputError(
+            f"Unsupported basic chart type: {chart_type}. PIE is not supported."
+        )
     start_col = data_grid.get("startColumnIndex", 0)
     end_col = data_grid.get("endColumnIndex", start_col + 1)
     column_count = max(1, end_col - start_col)
@@ -681,7 +696,7 @@ async def chart_create(
     legend_position: str = "RIGHT_LEGEND",
     anchor_cell: Optional[str] = None,
 ) -> str:
-    """Create a basic chart over data_range (first row = headers).
+    """Create a basic chart over data_range (first row = headers); PIE is unsupported.
 
     anchor_cell is the A1 cell the chart floats over (default: the sheet of
     data_range at H1).
@@ -689,7 +704,9 @@ async def chart_create(
     _require(data_range, "data_range", "chart_create")
     normalized_type = (chart_type or "").upper()
     if normalized_type not in CHART_TYPES:
-        raise UserInputError(f"chart_type must be one of {sorted(CHART_TYPES)}.")
+        raise UserInputError(
+            f"chart_type must be one of {sorted(CHART_TYPES)}; PIE is unsupported."
+        )
     normalized_legend = (legend_position or "").upper()
     if normalized_legend not in LEGEND_POSITIONS:
         raise UserInputError(
@@ -740,12 +757,16 @@ async def chart_update(
     legend_position: Optional[str] = None,
 ) -> str:
     """Retitle / retype / re-legend a chart. Fetches the current spec and
-    applies the given overrides, so untouched spec fields survive."""
+    applies the given overrides, so untouched spec fields survive. PIE conversion is unsupported."""
     if chart_id is None:
         raise UserInputError("'chart_id' is required for the 'chart_update' action.")
     if not any([title, chart_type, legend_position]):
         raise UserInputError(
             "Provide at least one of: title, chart_type, legend_position."
+        )
+    if chart_type and chart_type.upper() not in CHART_TYPES:
+        raise UserInputError(
+            f"chart_type must be one of {sorted(CHART_TYPES)}; PIE is unsupported."
         )
     target = None
     for chart in await _fetch_charts(service, spreadsheet_id):
@@ -769,7 +790,9 @@ async def chart_update(
     if chart_type:
         normalized_type = chart_type.upper()
         if normalized_type not in CHART_TYPES:
-            raise UserInputError(f"chart_type must be one of {sorted(CHART_TYPES)}.")
+            raise UserInputError(
+                f"chart_type must be one of {sorted(CHART_TYPES)}; PIE is unsupported."
+            )
         basic["chartType"] = normalized_type
     if legend_position:
         normalized_legend = legend_position.upper()
@@ -1194,11 +1217,12 @@ async def export_csv(
     navigate: Optional[str] = None,
     head: Optional[int] = None,
     skip_tokens: int = 0,
+    map_start: int = 0,
 ) -> str:
     """Export range_name (or the first sheet) as CSV text.
 
     Optional progressive-disclosure controls (see gsheets/disclosure.py):
-    map=True returns a token-bounded block index; navigate='<block>' or
+    map=True returns a token-bounded block index page; map_start selects its first block. Follow next_call for subsequent pages; navigate='<block>' or
     '<block>.<row>' returns content at that ordinal; head=<tokens> (with
     navigate) returns a token-bounded window plus a next_call hint;
     skip_tokens=<tokens> continues a window. With none of these set the CSV
@@ -1227,11 +1251,14 @@ async def export_csv(
     writer.writerows(values)
     csv_text = buffer.getvalue()
 
-    if not (map_flag or navigate is not None or head is not None or skip_tokens):
+    if not (
+        map_flag or map_start or navigate is not None or head is not None or skip_tokens
+    ):
         return csv_text
     return disclosure.export_response(
         csv_text,
         map_flag=map_flag,
+        map_start=map_start,
         navigate=navigate,
         head=head,
         skip_tokens=skip_tokens,
