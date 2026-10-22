@@ -538,7 +538,7 @@ except metadata.PackageNotFoundError:
 
 server = SecureFastMCP(
     version=_server_version,
-    name=_brand_config.brand_name or "google_workspace",
+    name=_brand_config.brand_name or "Google Workspace",
     auth=None,
     instructions=_server_instructions,
     website_url=_brand_config.brand_website_url,

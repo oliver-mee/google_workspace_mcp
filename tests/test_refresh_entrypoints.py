@@ -98,3 +98,53 @@ def test_inspection_honors_native_disabled_tool_filter(tmp_path):
     names = {t["name"] for t in json.loads(output.read_text())["tools"]}
     assert "sheets_read" in names
     assert not {"sheets_delete", "sheets_manage"} & names
+
+
+@pytest.mark.parametrize("branded", [False, True])
+def test_native_initialize_metadata_from_package_and_operator_config(tmp_path, branded):
+    env = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(tmp_path),
+        "WORKSPACE_MCP_CREDENTIALS_DIR": str(tmp_path / "creds"),
+        "WORKSPACE_MCP_PERMISSIONS": "sheets:readonly",
+        "FASTMCP_CHECK_FOR_UPDATES": "off",
+    }
+    if branded:
+        env.update(
+            {
+                "WORKSPACE_MCP_BRAND_NAME": "Example Workspace",
+                "WORKSPACE_MCP_BRAND_ICON_URL": "https://example.test/icon.png",
+                "WORKSPACE_MCP_BRAND_WEBSITE_URL": "https://example.test/",
+            }
+        )
+    output = tmp_path / "metadata.json"
+    code = (
+        BLOCK_NETWORK
+        + """
+import asyncio, json, sys
+from importlib.metadata import version
+from pathlib import Path
+from core.server import server
+from core.contract import inspect_contract
+result = asyncio.run(inspect_contract(server))['initialize']['serverInfo']
+assert result['version'] == version('workspace-mcp')
+Path(sys.argv[1]).write_text(json.dumps(result))
+"""
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(output)],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    info = json.loads(output.read_text())
+    assert info["name"] == ("Example Workspace" if branded else "Google Workspace")
+    if branded:
+        assert info["websiteUrl"] == "https://example.test/"
+        assert info["icons"][0]["src"] == "https://example.test/icon.png"
+    else:
+        assert not info.get("websiteUrl")
+        assert not info.get("icons")

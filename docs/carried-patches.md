@@ -51,3 +51,14 @@ Before deployment, build from a clean Git archive and verify container startup,
 MCP initialize/tools/list with isolated configuration, and compatibility with a
 copy of any existing encrypted OAuth store. Preserve the prior image and store
 for rollback. Health alone does not establish OAuth or live-provider acceptance.
+
+## OAuth approval presentation and remembered decisions
+
+The local provider delegates security processing to pinned FastMCP and supplies a
+compact escaped consent page. Remembered decisions bind exact client metadata,
+redirect, scopes and resource and apply only to same-origin browser navigation.
+Cross-site ChatGPT requests still require approval; client authentication does not
+prove which user initiated a ChatGPT connection. No trusted-domain bypass, dependency
+source patch, new scopes or token-store migration is introduced. Older open consent
+forms need restarting. See [OAuth approval and listing metadata](oauth-approval.md)
+for the threat model, adapter contract, defaults and client listing checklist.
