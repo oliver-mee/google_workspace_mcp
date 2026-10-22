@@ -9,7 +9,7 @@ import logging
 import asyncio
 import re
 import ssl
-from typing import List, Optional
+from typing import Literal, Union, List, Optional
 
 import httpx
 from googleapiclient.errors import HttpError
@@ -21,6 +21,7 @@ from auth.service_decorator import require_google_service, require_multiple_serv
 from core.file_limits import FileTooLargeError, download_http_url_bytes
 from core.gcs_attachment_storage import gcs_files_enabled
 from core.server import server
+from gchat.chat_helpers import dispatch_chat
 from core.utils import TransientNetworkError, UserInputError, handle_http_errors
 from gchat.chat_helpers import (
     _execute_chat_request,
@@ -743,3 +744,45 @@ async def download_chat_attachment(
         f"[download_chat_attachment] Saved {size_kb:.1f} KB attachment to {result.path}"
     )
     return "\n".join(result_lines)
+
+
+@server.tool(
+    title="Read Chat Gaps",
+    description="Read-only Chat gaps. All fields go in params. find_space requires query (optional exact=false, max_results=50); list_reactions requires message_id=spaces/ID/messages/ID (optional page_size=50); list_threads requires space_id=spaces/ID (optional page_size=50; samples latest messages). Use upstream list_spaces for listing spaces.",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@handle_http_errors("chat_read", is_read_only=True, service_type="chat")
+@require_google_service("chat", ["chat_read", "chat_spaces_readonly"])
+async def chat_read(
+    service,
+    user_google_email: str,
+    action: Literal["find_space", "list_reactions", "list_threads"],
+    params: Optional[Union[dict, str]] = None,
+) -> str:
+    return await dispatch_chat(service, "read", action, params)
+
+
+@server.tool(
+    title="Manage Chat Gaps",
+    description="Chat write gaps. All fields go in params. create_space requires display_name (space_type=SPACE only; no import mode); dm_space requires user_id=users/ID; delete_reaction requires reaction_id=spaces/ID/messages/ID/reactions/ID and chat:full. Use upstream create_reaction to add reactions.",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+@handle_http_errors("chat_manage", is_read_only=False, service_type="chat")
+@require_google_service("chat", ["chat_write", "chat_spaces"])
+async def chat_manage(
+    service,
+    user_google_email: str,
+    action: Literal["create_space", "dm_space", "delete_reaction"],
+    params: Optional[Union[dict, str]] = None,
+) -> str:
+    return await dispatch_chat(service, "manage", action, params)

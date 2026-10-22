@@ -79,6 +79,9 @@ docs:
 
 sheets:
   core:
+    - sheets_read
+    - sheets_manage
+    - sheets_delete
     - create_spreadsheet
     - read_sheet_values
     - modify_sheet_values
@@ -100,6 +103,8 @@ sheets:
 
 chat:
   core:
+    - chat_read
+    - chat_manage
     - send_message
     - get_messages
     - search_messages

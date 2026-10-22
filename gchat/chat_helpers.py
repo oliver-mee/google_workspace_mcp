@@ -6,11 +6,16 @@ resolution for Chat senders and spaces via the People API.
 """
 
 import asyncio
+import inspect
+import re
 import logging
 import ssl
 from typing import Dict, List, Optional
 
 from googleapiclient.errors import HttpError
+from core.utils import UserInputError
+from auth.permissions import require_action
+from core.action_dispatch import normalize_action_params, call_action
 
 logger = logging.getLogger(__name__)
 
@@ -273,3 +278,183 @@ def _extract_rich_links(msg: dict) -> List[str]:
             if uri and uri not in text:
                 urls.append(uri)
     return urls
+
+
+def _format_space(space: Dict) -> str:
+    """One-line summary of a Chat space."""
+    name = space.get("displayName") or space.get("name", "")
+    space_id = space.get("name", "")
+    stype = space.get("spaceType", "UNKNOWN")
+    threaded = space.get("spaceThreadingState") or (
+        "threaded" if space.get("threaded") else "unspecified threading"
+    )
+    return f"{name} (ID: {space_id}, type: {stype}, {threaded})"
+
+
+async def create_chat_space(
+    service,
+    *,
+    display_name: Optional[str] = None,
+    space_type: str = "SPACE",
+) -> str:
+    """Create a named SPACE using user OAuth; group-chat import mode is unsupported."""
+    if space_type != "SPACE" or not display_name or not display_name.strip():
+        raise UserInputError("create_space requires display_name and space_type=SPACE")
+    body: Dict = {"spaceType": space_type}
+    if display_name:
+        body["displayName"] = display_name
+    space = await asyncio.to_thread(service.spaces().create(body=body).execute)
+    return f"Space created: {_format_space(space)}"
+
+
+async def delete_chat_reaction(service, *, reaction_id: str) -> str:
+    """Delete a reaction by its resource name."""
+    await asyncio.to_thread(
+        service.spaces().messages().reactions().delete(name=reaction_id).execute
+    )
+    return f"Deleted reaction {reaction_id}."
+
+
+async def list_chat_reactions(service, *, message_id: str, page_size: int = 50) -> str:
+    """List emoji reactions on a message."""
+    response = await asyncio.to_thread(
+        service.spaces()
+        .messages()
+        .reactions()
+        .list(parent=message_id, pageSize=page_size)
+        .execute
+    )
+    reactions = response.get("reactions", [])
+    if not reactions:
+        return f"No reactions on message {message_id}."
+    lines = [f"Reactions on {message_id}:"]
+    for r in reactions:
+        emoji = r.get("emoji", {})
+        symbol = (
+            emoji.get("unicode") or f":{emoji.get('customEmoji', {}).get('uid', '?')}:"
+        )
+        lines.append(f"- {symbol} ({r.get('name', '')})")
+    return "\n".join(lines)
+
+
+async def list_chat_threads(service, *, space_id: str, page_size: int = 50) -> str:
+    """List distinct threads in a space by grouping messages on thread.name.
+
+    The Chat API has no threads endpoint, so threads are derived from the most
+    recent messages: one line per thread, showing the thread resource name and
+    how many of the fetched messages belong to it. Also reports the default
+    (``0``-suffixed) main-thread marker when present.
+    """
+    response = await asyncio.to_thread(
+        service.spaces()
+        .messages()
+        .list(parent=space_id, pageSize=page_size, orderBy="createTime desc")
+        .execute
+    )
+    messages = response.get("messages", [])
+    if not messages:
+        return f"No messages found in space {space_id}."
+
+    thread_groups: Dict[str, int] = {}
+    for msg in messages:
+        thread = msg.get("thread", {})
+        key = thread.get("name") or "MAIN"
+        thread_groups[key] = thread_groups.get(key, 0) + 1
+
+    lines = [f"Threads in {space_id} (from latest {len(messages)} messages):"]
+    for key, count in sorted(thread_groups.items(), key=lambda x: -x[1]):
+        label = "default thread" if key == "MAIN" else key
+        lines.append(f"- {label}: {count} message(s)")
+    return "\n".join(lines)
+
+
+async def find_chat_space(
+    service, *, query: str, exact: bool = False, max_results: int = 50
+) -> str:
+    """Match display names across paginated spaces, stopping at max_results."""
+    if not query.strip() or not 1 <= max_results <= 1000:
+        raise UserInputError("query must be non-empty and max_results must be 1..1000")
+    hits, token = [], None
+    while True:
+        response = await asyncio.to_thread(
+            service.spaces()
+            .list(pageSize=100, **({"pageToken": token} if token else {}))
+            .execute
+        )
+        for space in response.get("spaces", []):
+            name = (space.get("displayName") or "").casefold()
+            if name == query.casefold() if exact else query.casefold() in name:
+                hits.append(space)
+                if len(hits) >= max_results:
+                    return (
+                        "\n".join(_format_space(s) for s in hits)
+                        + f"\n(result limit: {max_results})"
+                    )
+        token = response.get("nextPageToken")
+        if not token:
+            return "\n".join(_format_space(s) for s in hits) or "No matching spaces."
+
+
+async def find_or_create_dm_space(service, *, user_id: str) -> str:
+    """Use native findDirectMessage and atomic setup instead of partial DM creation."""
+    if not re.fullmatch(r"users/[^/\s]+", user_id):
+        raise UserInputError("user_id must be a users/ID resource name")
+    try:
+        space = await asyncio.to_thread(
+            service.spaces().findDirectMessage(name=user_id).execute
+        )
+        return f"Found existing DM: {_format_space(space)}"
+    except HttpError as exc:
+        if exc.resp.status != 404:
+            raise
+    space = await asyncio.to_thread(
+        service.spaces()
+        .setup(
+            body={
+                "space": {"spaceType": "DIRECT_MESSAGE"},
+                "memberships": [{"member": {"name": user_id, "type": "HUMAN"}}],
+            }
+        )
+        .execute
+    )
+    return f"Created DM: {_format_space(space)}"
+
+
+async def dispatch_chat(service, family: str, action: str, params=None) -> str:
+    actions = {
+        "read": {
+            "find_space": find_chat_space,
+            "list_reactions": list_chat_reactions,
+            "list_threads": list_chat_threads,
+        },
+        "manage": {
+            "create_space": create_chat_space,
+            "dm_space": find_or_create_dm_space,
+            "delete_reaction": delete_chat_reaction,
+        },
+    }[family]
+    if action not in actions:
+        raise UserInputError(f"Unknown Chat {family} action: {action}")
+    require_action("chat", "read" if family == "read" else action)
+    extra = normalize_action_params(params)
+    for field, pattern in (
+        ("message_id", r"spaces/[^/\s]+/messages/[^/\s]+"),
+        ("space_id", r"spaces/[^/\s]+"),
+        ("reaction_id", r"spaces/[^/\s]+/messages/[^/\s]+/reactions/[^/\s]+"),
+    ):
+        if field in extra and (
+            not isinstance(extra[field], str) or not re.fullmatch(pattern, extra[field])
+        ):
+            raise UserInputError(f"Invalid {field} resource name")
+    if "page_size" in extra and (
+        not isinstance(extra["page_size"], int) or not 1 <= extra["page_size"] <= 1000
+    ):
+        raise UserInputError("page_size must be 1..1000")
+    if action == "create_space" and extra.get("space_type", "SPACE") != "SPACE":
+        raise UserInputError("space_type must be SPACE")
+    function = actions[action]
+    try:
+        inspect.signature(function).bind(service, **extra)
+    except TypeError as exc:
+        raise UserInputError(f"Invalid {action} parameters: {exc}") from exc
+    return await call_action(function, service, **extra)

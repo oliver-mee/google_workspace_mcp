@@ -983,7 +983,7 @@ async def _delete_script_project_impl(
     ),
 )
 @_require_project_action_service(
-    {"create": ("script", "script_projects"), "delete": ("drive", "drive_full")}
+    {"create": ("script", "script_projects"), "delete": ("drive", "drive_file")}
 )
 @handle_http_errors("manage_script_project", service_type="script")
 async def manage_script_project(

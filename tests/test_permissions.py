@@ -110,7 +110,8 @@ class TestGetScopesForPermission:
     def test_drive_full_includes_readonly(self):
         scopes = get_scopes_for_permission("drive", "full")
         assert DRIVE_READONLY_SCOPE in scopes
-        assert DRIVE_SCOPE in scopes
+        assert DRIVE_SCOPE not in scopes
+        assert DRIVE_FILE_SCOPE in scopes
 
     def test_sheets_full_includes_drive_file(self):
         """Without drive.file the registry filter hides create_spreadsheet."""

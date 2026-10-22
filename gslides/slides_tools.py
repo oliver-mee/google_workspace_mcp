@@ -8,7 +8,9 @@ import asyncio
 import base64
 import json
 import logging
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Annotated, Any, Dict, Iterator, List, Optional, Tuple
+
+from pydantic import Field
 
 import httpx
 from fastmcp.tools import ToolResult
@@ -20,6 +22,8 @@ from core.utils import handle_http_errors
 from core.comments import create_comment_tools
 from gslides.slides_helpers import (
     validate_batch_update_requests,
+    strip_null_values,
+    SLIDES_BATCH_UPDATE_REQUESTS_JSON_SCHEMA_EXTRA,
     validate_insert_text_targets,
 )
 
@@ -644,7 +648,10 @@ async def batch_update_presentation(
     service,
     user_google_email: str,
     presentation_id: str,
-    requests: List[Dict[str, Any]],
+    requests: Annotated[
+        List[Dict[str, Any]],
+        Field(json_schema_extra=SLIDES_BATCH_UPDATE_REQUESTS_JSON_SCHEMA_EXTRA),
+    ],
 ) -> str:
     """
     Apply batch updates to a Google Slides presentation.
@@ -679,6 +686,8 @@ async def batch_update_presentation(
         f"[batch_update_presentation] Invoked. Email: '{user_google_email}', ID: '{presentation_id}', Requests: {len(requests)}"
     )
 
+    validate_batch_update_requests(requests)
+    requests = strip_null_values(requests)
     validate_batch_update_requests(requests)
     await validate_insert_text_targets(service, presentation_id, requests)
 

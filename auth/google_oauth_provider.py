@@ -1,11 +1,29 @@
 """Google OAuth defaults independent of protocol-level token requirements."""
 
+from starlette.routing import Route
+
+from auth.basic_client_auth import BasicClientIDEndpoint
 from fastmcp.server.auth.providers.google import GoogleProvider as _GoogleProvider
 from mcp.server.auth.provider import AuthorizationParams
 from mcp.shared.auth import OAuthClientInformationFull
 
 
 class GoogleProvider(_GoogleProvider):
+    def get_routes(self, mcp_path=None):
+        routes = super().get_routes(mcp_path)
+        return [
+            Route(
+                route.path,
+                endpoint=BasicClientIDEndpoint(route.app),
+                methods=route.methods,
+                name=route.name,
+                include_in_schema=route.include_in_schema,
+            )
+            if isinstance(route, Route) and route.path == "/token"
+            else route
+            for route in routes
+        ]
+
     async def authorize(
         self, client: OAuthClientInformationFull, params: AuthorizationParams
     ) -> str:

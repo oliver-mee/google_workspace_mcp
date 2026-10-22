@@ -531,7 +531,13 @@ _brand_icons = (
     [Icon(src=_brand_config.brand_icon_url)] if _brand_config.brand_icon_url else None
 )
 
+try:
+    _server_version = metadata.version("workspace-mcp")
+except metadata.PackageNotFoundError:
+    _server_version = "dev"
+
 server = SecureFastMCP(
+    version=_server_version,
     name=_brand_config.brand_name or "google_workspace",
     auth=None,
     instructions=_server_instructions,

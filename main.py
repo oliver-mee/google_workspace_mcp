@@ -1,4 +1,5 @@
 import io
+import asyncio
 import argparse
 import json
 import logging
@@ -8,9 +9,12 @@ import sys
 from functools import partial
 from importlib import metadata, import_module
 from typing import NoReturn
+from pathlib import Path
 from urllib.parse import urlparse
 from dotenv import load_dotenv
 from core.startup_ui import StartupDisplay, collapse_home, wordmark_lines
+from core.contract import inspect_contract
+from core.service_modules import SERVICE_MODULES
 
 # Prevent any stray startup output on macOS (e.g. platform identifiers) from
 # corrupting the MCP JSON-RPC handshake on stdout. We capture anything written
@@ -250,20 +254,7 @@ def validate_streamable_http_auth(transport: str) -> None:
 
 # Single source of truth: service name -> module path.
 # VALID_SERVICES is derived from this mapping.
-SERVICE_MODULES = {
-    "gmail": "gmail.gmail_tools",
-    "drive": "gdrive.drive_tools",
-    "calendar": "gcalendar.calendar_tools",
-    "docs": "gdocs.docs_tools",
-    "sheets": "gsheets.sheets_tools",
-    "chat": "gchat.chat_tools",
-    "forms": "gforms.forms_tools",
-    "slides": "gslides.slides_tools",
-    "tasks": "gtasks.tasks_tools",
-    "contacts": "gcontacts.contacts_tools",
-    "search": "gsearch.search_tools",
-    "appscript": "gappsscript.apps_script_tools",
-}
+
 VALID_SERVICES = frozenset(SERVICE_MODULES)
 
 # Every icon is a double-width emoji with no variation selector, so the startup
@@ -550,11 +541,16 @@ def main():
             "Granular per-service permission levels. Format: service:level. "
             "Example: --permissions gmail:organize drive:readonly. "
             "Gmail levels: readonly, organize, drafts, send, full (cumulative). "
-            "Other services: readonly, full. "
+            "Sheets, Chat and Tasks also support manage; other services: readonly, full. "
             "Join levels with '+' to grant only the scopes each named level adds "
             "(e.g. gmail:readonly+send). "
             "Mutually exclusive with --read-only and --tools."
         ),
+    )
+    parser.add_argument(
+        "--inspect-contract",
+        metavar="PATH",
+        help="Write the registered MCP contract to PATH and exit before credential checks, HTTP auth configuration or serving",
     )
     args = parser.parse_args()
 
@@ -822,6 +818,12 @@ def main():
     # Filter tools based on tier configuration (if tier-based loading is enabled)
     tools_removed = filter_server_tools(server)
 
+    if args.inspect_contract:
+        Path(args.inspect_contract).write_text(
+            json.dumps(asyncio.run(inspect_contract(server)), indent=2)
+        )
+        return
+
     ui.section("Services")
     ui.grid([(SERVICE_ICONS.get(t, "🔧"), t.title()) for t in loaded])
     ui.blank()
@@ -1033,7 +1035,6 @@ def main():
         else:
             if http_port is not None:
                 # Dual transport: stdio for MCP client + HTTP for workspace-cli
-                import asyncio
                 import uvicorn
 
                 # Bind sidecar to loopback only — auth provider is not initialized

@@ -5,6 +5,7 @@ Enforces OAuth 2.1 + stateless defaults required by FastMCP-hosted deployments.
 """
 
 import logging
+from importlib import import_module
 import os
 import sys
 from dotenv import load_dotenv
@@ -35,6 +36,8 @@ from core.tool_registry import (
     filter_server_tools,
 )
 from auth.scopes import set_enabled_tools
+from auth.permissions import parse_permissions_arg, set_permissions
+from core.service_modules import SERVICE_MODULES
 
 
 def enforce_fastmcp_cloud_defaults():
@@ -152,34 +155,34 @@ else:
 # Set transport mode for HTTP (FastMCP CLI defaults to streamable-http)
 set_transport_mode("streamable-http")
 
-# Import all tool modules to register their @server.tool() decorators
-import gmail.gmail_tools
-import gdrive.drive_tools
-import gcalendar.calendar_tools
-import gdocs.docs_tools
-import gsheets.sheets_tools
-import gchat.chat_tools
-import gforms.forms_tools
-import gslides.slides_tools
-import gtasks.tasks_tools
-import gsearch.search_tools
+# Activate permissions before tool decorators resolve service scopes.
+_permission_config = os.environ.get("WORKSPACE_MCP_PERMISSIONS", "").strip()
+_cloud_permissions = (
+    parse_permissions_arg(_permission_config.split()) if _permission_config else None
+)
+set_permissions(_cloud_permissions)
+all_services = (
+    list(_cloud_permissions)
+    if _cloud_permissions
+    else [
+        "gmail",
+        "drive",
+        "calendar",
+        "docs",
+        "sheets",
+        "chat",
+        "forms",
+        "slides",
+        "tasks",
+        "search",
+    ]
+)
+for _service in all_services:
+    import_module(SERVICE_MODULES[_service])
 
 # Configure tool registration
 wrap_server_tool_method(server)
 
-# Enable all tools and services by default
-all_services = [
-    "gmail",
-    "drive",
-    "calendar",
-    "docs",
-    "sheets",
-    "chat",
-    "forms",
-    "slides",
-    "tasks",
-    "search",
-]
 set_enabled_tools(all_services)  # Set enabled services for scopes
 set_enabled_tool_names(None)  # Don't filter individual tools - enable all
 # Env-only block list: this entrypoint has no CLI args

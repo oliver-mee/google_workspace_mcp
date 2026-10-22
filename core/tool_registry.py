@@ -10,7 +10,11 @@ import os
 from typing import Set, Optional, Callable
 
 from auth.oauth_config import is_oauth21_enabled
-from auth.permissions import is_permissions_mode, get_allowed_scopes_set
+from auth.permissions import (
+    is_permissions_mode,
+    get_allowed_scopes_set,
+    get_permissions,
+)
 from auth.scopes import is_read_only_mode, get_all_read_only_scopes
 
 logger = logging.getLogger(__name__)
@@ -219,6 +223,13 @@ def filter_server_tools(server) -> int:
                         required_scopes,
                     )
                     tools_to_remove.add(tool_name)
+
+    permissions = get_permissions() or {}
+    sheets_level = permissions.get("sheets", "").split("+")
+    if permissions and "full" not in sheets_level:
+        tools_to_remove.update(
+            {"sheets_delete", "move_sheet_rows"} & tool_components.keys()
+        )
 
     # 5. Explicit per-tool block list (subtractive, so it wins over tier and
     # permission selection). Unmatched entries only warn: a name is legitimately

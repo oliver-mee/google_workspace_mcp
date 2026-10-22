@@ -10,6 +10,7 @@ Usage:
 
 Gmail levels: readonly, organize, drafts, send, full
 Tasks levels: readonly, manage, full
+Sheets and Chat: readonly, manage, full
 Other services: readonly, full (extensible by adding entries to SERVICE_PERMISSION_LEVELS)
 
 Joining levels with ``+`` (``gmail:readonly+send``) grants only the scopes each
@@ -18,6 +19,8 @@ named level adds, without the levels in between.
 
 import logging
 from typing import Dict, FrozenSet, Iterable, List, Optional, Tuple
+
+from core.utils import UserInputError
 
 from auth.scopes import (
     GMAIL_READONLY_SCOPE,
@@ -28,7 +31,6 @@ from auth.scopes import (
     GMAIL_SETTINGS_BASIC_SCOPE,
     DRIVE_READONLY_SCOPE,
     DRIVE_FILE_SCOPE,
-    DRIVE_SCOPE,
     CALENDAR_READONLY_SCOPE,
     CALENDAR_EVENTS_SCOPE,
     CALENDAR_SCOPE,
@@ -76,7 +78,7 @@ SERVICE_PERMISSION_LEVELS: Dict[str, List[Tuple[str, List[str]]]] = {
     ],
     "drive": [
         ("readonly", [DRIVE_READONLY_SCOPE]),
-        ("full", [DRIVE_SCOPE, DRIVE_FILE_SCOPE]),
+        ("full", [DRIVE_FILE_SCOPE, DRIVE_READONLY_SCOPE]),
     ],
     "calendar": [
         ("readonly", [CALENDAR_READONLY_SCOPE]),
@@ -88,7 +90,8 @@ SERVICE_PERMISSION_LEVELS: Dict[str, List[Tuple[str, List[str]]]] = {
     ],
     "sheets": [
         ("readonly", [SHEETS_READONLY_SCOPE, DRIVE_READONLY_SCOPE]),
-        ("full", [SHEETS_WRITE_SCOPE, DRIVE_READONLY_SCOPE, DRIVE_FILE_SCOPE]),
+        ("manage", [SHEETS_WRITE_SCOPE, DRIVE_READONLY_SCOPE, DRIVE_FILE_SCOPE]),
+        ("full", []),
     ],
     "chat": [
         (
@@ -100,7 +103,8 @@ SERVICE_PERMISSION_LEVELS: Dict[str, List[Tuple[str, List[str]]]] = {
                 CONTACTS_READONLY_SCOPE,
             ],
         ),
-        ("full", [CHAT_WRITE_SCOPE, CHAT_SPACES_SCOPE]),
+        ("manage", [CHAT_WRITE_SCOPE, CHAT_SPACES_SCOPE]),
+        ("full", []),
     ],
     "forms": [
         ("readonly", [FORMS_BODY_READONLY_SCOPE, FORMS_RESPONSES_READONLY_SCOPE]),
@@ -143,7 +147,7 @@ SERVICE_PERMISSION_LEVELS: Dict[str, List[Tuple[str, List[str]]]] = {
                 SCRIPT_METRICS_SCOPE,
                 SCRIPT_EXTERNAL_REQUEST_SCOPE,
                 SCRIPT_SCRIPTAPP_SCOPE,
-                DRIVE_SCOPE,
+                DRIVE_FILE_SCOPE,
             ],
         ),
     ],
@@ -153,6 +157,8 @@ SERVICE_PERMISSION_LEVELS: Dict[str, List[Tuple[str, List[str]]]] = {
 # Maps service -> level -> frozenset of denied action names.
 # Levels not listed here (or services without entries) deny nothing.
 SERVICE_DENIED_ACTIONS: Dict[str, Dict[str, FrozenSet[str]]] = {
+    "sheets": {"manage": frozenset({"delete", "clear", "merge"})},
+    "chat": {"manage": frozenset({"delete_reaction"})},
     "tasks": {
         "manage": frozenset({"delete", "clear_completed"}),
     },
@@ -327,3 +333,28 @@ def parse_permissions_arg(permissions_list: List[str]) -> Dict[str, str]:
                 )
         result[service] = level
     return result
+
+
+def require_action(service: str, action: str) -> None:
+    """Enforce action restrictions in addition to registered-tool scope filtering.
+
+    Manage permits writes and metadata removal, but explicit data clearing,
+    row/tab/table deletion, and value-discarding merges require full Sheets.
+    Permission unions use their highest named level, like is_action_denied.
+    """
+    if _PERMISSIONS is None:
+        return
+    configured = _PERMISSIONS.get(service)
+    level = (
+        max(configured.split("+"), key=get_valid_levels(service).index)
+        if configured
+        else None
+    )
+    if (
+        level is None
+        or (level == "readonly" and action != "read")
+        or is_action_denied(service, action)
+    ):
+        raise UserInputError(
+            f"{service}:{level or 'disabled'} does not permit {action}; use {service}:full for data removal."
+        )

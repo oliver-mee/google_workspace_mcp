@@ -8,12 +8,18 @@ import logging
 import asyncio
 import json
 import copy
-from typing import Any, List, Optional, Union
+from typing import Literal, Any, List, Optional, Union
 
 from fastmcp.exceptions import ToolError
 from googleapiclient.errors import HttpError
 from mcp.types import ToolAnnotations
 
+from gsheets.sheets_dispatch_helpers import (
+    action_contract,
+    dispatch_action,
+    list_tables,
+)
+from auth.permissions import require_action
 from auth.service_decorator import require_google_service
 from core.server import server
 from core.utils import handle_http_errors, UserInputError, StringList
@@ -165,7 +171,7 @@ async def get_spreadsheet_info(
         service.spreadsheets()
         .get(
             spreadsheetId=spreadsheet_id,
-            fields="spreadsheetId,properties(title,locale),sheets(properties(title,sheetId,gridProperties(rowCount,columnCount)),conditionalFormats)",
+            fields="spreadsheetId,properties(title,locale,timeZone),namedRanges,sheets(properties(title,sheetId,gridProperties(rowCount,columnCount)),conditionalFormats)",
         )
         .execute
     )
@@ -205,10 +211,17 @@ async def get_spreadsheet_info(
     sheets_section = "\n".join(sheets_info) if sheets_info else "  No sheets found"
     text_output = "\n".join(
         [
-            f'Spreadsheet: "{title}" (ID: {spreadsheet_id}) | Locale: {locale}',
+            f'Spreadsheet: "{title}" (ID: {spreadsheet_id}) | Locale: {locale} | Timezone: {properties.get("timeZone", "Unknown")}',
             f"Sheets ({len(sheets)}):",
             sheets_section,
         ]
+    )
+
+    text_output += "\n" + _format_named_ranges_list(
+        spreadsheet.get("namedRanges", []),
+        sheet_titles,
+        spreadsheet_id,
+        user_google_email,
     )
 
     logger.info(
@@ -300,9 +313,23 @@ async def read_sheet_values(
             service, spreadsheet_id, resolved_range
         )
 
-    if not values and not formula_values:
+    if (
+        not values
+        and not formula_values
+        and not (hyperlink_section or notes_section or smart_chips_section)
+    ):
         return f"No data found in range '{range_name}' for {user_google_email}." + (
             clamp_note or ""
+        )
+
+    if not values and (hyperlink_section or notes_section or smart_chips_section):
+        return (
+            f"No displayed values in '{range_name}'."
+            + hyperlink_section
+            + notes_section
+            + smart_chips_section
+            + formula_section
+            + (clamp_note or "")
         )
 
     if not values:
@@ -376,7 +403,7 @@ async def modify_sheet_values(
     user_google_email: str,
     spreadsheet_id: str,
     range_name: str,
-    values: Optional[Union[str, List[List[str]]]] = None,
+    values: Optional[Union[str, List[List[Union[str, int, float, bool, None]]]]] = None,
     value_input_option: str = "USER_ENTERED",
     clear_values: bool = False,
     chips: Optional[Union[str, dict, List[Any]]] = None,
@@ -390,7 +417,7 @@ async def modify_sheet_values(
         user_google_email (str): The user's Google email address. Required.
         spreadsheet_id (str): The ID of the spreadsheet. Required.
         range_name (str): The range to modify (e.g., "Sheet1!A1:D10", "A1:D10"). Required.
-        values (Optional[Union[str, List[List[str]]]]): 2D array of values to write/update. Can be a JSON string or Python list. Required unless clear_values=True or chips is provided.
+        values (Optional[Union[str, List[List[Union[str, int, float, bool, None]]]]]): 2D array of values to write/update. Can be a JSON string or Python list. Required unless clear_values=True or chips is provided.
         value_input_option (str): How to interpret input values ("RAW" or "USER_ENTERED"). Defaults to "USER_ENTERED".
         clear_values (bool): If True, clears the range instead of writing values. Defaults to False.
         chips (Optional[Union[str, dict, List[Any]]]): Smart chip(s) to insert instead of values:
@@ -406,6 +433,7 @@ async def modify_sheet_values(
     Returns:
         str: Confirmation message of the successful modification operation.
     """
+    require_action("sheets", "clear" if clear_values else "manage")
     if chips is not None:
         if values is not None or clear_values:
             raise UserInputError(
@@ -704,6 +732,7 @@ async def _format_sheet_range_impl(
     Returns:
         Dictionary with keys: range_name, spreadsheet_id, summary.
     """
+    require_action("sheets", "merge" if merge_cells or merge_type else "manage")
     if (border_style or border_color) and not borders:
         raise UserInputError(
             "border_style and border_color need borders to say which sides to draw."
@@ -1687,10 +1716,12 @@ async def list_sheet_tables(
     service,
     user_google_email: str,
     spreadsheet_id: str,
+    table_id: Optional[str] = None,
+    table_name: Optional[str] = None,
 ) -> str:
     """
-    Lists all structured tables in a spreadsheet with their IDs, names, ranges,
-    and column details. Use this to find table IDs for append_table_rows.
+    Lists native tables with typed columns and dropdown choices. Optionally select
+    one table by table_id or table_name. Use this to find IDs for append_table_rows.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
@@ -1699,61 +1730,9 @@ async def list_sheet_tables(
     Returns:
         str: Formatted list of tables with their IDs, names, ranges, and columns.
     """
-    logger.info(
-        f"[list_sheet_tables] Invoked. Email: '{user_google_email}', "
-        f"Spreadsheet: {spreadsheet_id}"
+    return await list_tables(
+        service, spreadsheet_id, table_id=table_id, table_name=table_name
     )
-
-    spreadsheet = await asyncio.to_thread(
-        service.spreadsheets()
-        .get(
-            spreadsheetId=spreadsheet_id,
-            fields="sheets(properties(title,sheetId),tables)",
-        )
-        .execute
-    )
-
-    tables_found = []
-    for sheet in spreadsheet.get("sheets", []):
-        sheet_title = sheet.get("properties", {}).get("title", "Unknown")
-        for table in sheet.get("tables", []):
-            table_id = table.get("tableId")
-            name = table.get("name", "Unnamed")
-            range_info = table.get("range", {})
-
-            start_row = range_info.get("startRowIndex", 0)
-            end_row = range_info.get("endRowIndex", "?")
-            start_col = range_info.get("startColumnIndex", 0)
-            end_col = range_info.get("endColumnIndex", "?")
-
-            columns = []
-            for col in table.get("columnProperties", []):
-                col_name = col.get("columnName", "")
-                columns.append(col_name)
-
-            tables_found.append(
-                f"  Table ID: {table_id}\n"
-                f"  Name: {name}\n"
-                f"  Sheet: {sheet_title}\n"
-                f"  Range: rows {start_row}-{end_row}, cols {start_col}-{end_col}\n"
-                f"  Columns: {', '.join(columns) if columns else 'N/A'}"
-            )
-
-    if not tables_found:
-        text_output = (
-            f"No structured tables found in spreadsheet {spreadsheet_id} "
-            f"for {user_google_email}."
-        )
-    else:
-        text_output = (
-            f"Found {len(tables_found)} table(s) in spreadsheet {spreadsheet_id} "
-            f"for {user_google_email}:\n\n" + "\n\n".join(tables_found)
-        )
-
-    logger.info(
-        f"[list_sheet_tables] Found {len(tables_found)} tables for {user_google_email}"
-    )
-    return text_output
 
 
 @server.tool(
@@ -1984,6 +1963,12 @@ async def _resize_sheet_dimensions_impl(
     Returns:
         Dictionary with keys: spreadsheet_id, summary.
     """
+    require_action(
+        "sheets",
+        "delete"
+        if any(v is not None for v in (delete_rows, delete_row_range, delete_columns))
+        else "manage",
+    )
     has_any = any(
         [
             column_sizes,
@@ -2503,6 +2488,12 @@ async def manage_sheet_tab(
     Returns:
         str: Confirmation of the change.
     """
+    require_action(
+        "sheets",
+        "delete"
+        if isinstance(action, str) and action.strip().lower() == "delete"
+        else "manage",
+    )
     valid_actions = ("rename", "delete", "hide", "unhide", "reorder", "style")
     action_lower = action.strip().lower() if isinstance(action, str) else ""
     if action_lower not in valid_actions:
@@ -2764,6 +2755,7 @@ async def move_sheet_rows(
     Returns:
         str: Confirmation message with the number of rows moved.
     """
+    require_action("sheets", "delete")
     logger.info(
         f"[move_sheet_rows] Invoked. Email: '{user_google_email}', "
         f"Spreadsheet: {spreadsheet_id}, "
@@ -3183,3 +3175,97 @@ _comment_tools = create_comment_tools(
 # Extract and register the functions
 list_spreadsheet_comments = _comment_tools["list_comments"]
 manage_spreadsheet_comment = _comment_tools["manage_comment"]
+
+
+@server.tool(
+    title="Read Sheets Gaps",
+    description="Sheets gap operations. All action-specific fields go in params. Use upstream tools for values, tabs, named ranges, formatting and dimension changes. Actions: chart_get, chart_list, banding_list, validation_get, read_format, export, datasource_describe, datasource_table_describe. For export: params accepts range_name, map=true, navigate=block or block.row, head=tokens, skip_tokens. Token estimates use four characters per token. Use sheets_action_contract to inspect parameter requirements.",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@handle_http_errors("sheets_read", is_read_only=True, service_type="sheets")
+@require_google_service("sheets", "sheets_read")
+async def sheets_read(
+    service,
+    user_google_email: str,
+    spreadsheet_id: str,
+    action: Literal[
+        "chart_get",
+        "chart_list",
+        "banding_list",
+        "validation_get",
+        "read_format",
+        "export",
+        "datasource_describe",
+        "datasource_table_describe",
+    ],
+    params: Optional[Union[dict, str]] = None,
+) -> str:
+    return await dispatch_action(service, spreadsheet_id, "read", action, params)
+
+
+@server.tool(
+    title="Manage Sheets Gaps",
+    description="Sheets gap operations. All action-specific fields go in params. Use upstream tools for values, tabs, named ranges, formatting and dimension changes. Actions: table_create, find_replace, sheet_copy, copy_paste, chart_create, chart_update, chart_delete, banding_set, banding_clear, validation_set, note_set, filter_set. Use sheets_action_contract to inspect parameter requirements. Explicit data removal requires sheets:full.",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+@handle_http_errors("sheets_manage", is_read_only=False, service_type="sheets")
+@require_google_service("sheets", "sheets_write")
+async def sheets_manage(
+    service,
+    user_google_email: str,
+    spreadsheet_id: str,
+    action: Literal[
+        "table_create",
+        "find_replace",
+        "sheet_copy",
+        "copy_paste",
+        "chart_create",
+        "chart_update",
+        "chart_delete",
+        "banding_set",
+        "banding_clear",
+        "validation_set",
+        "note_set",
+        "filter_set",
+    ],
+    params: Optional[Union[dict, str]] = None,
+) -> str:
+    return await dispatch_action(service, spreadsheet_id, "manage", action, params)
+
+
+@server.tool(
+    title="Delete Sheets Gaps",
+    description="Sheets gap operations. All action-specific fields go in params. Use upstream tools for values, tabs, named ranges, formatting and dimension changes. Actions: table_clear, table_delete. Use sheets_action_contract to inspect parameter requirements. Explicit data removal requires sheets:full.",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+@handle_http_errors("sheets_delete", is_read_only=False, service_type="sheets")
+@require_google_service("sheets", "sheets_write")
+async def sheets_delete(
+    service,
+    user_google_email: str,
+    spreadsheet_id: str,
+    action: Literal["table_clear", "table_delete"],
+    params: Optional[Union[dict, str]] = None,
+) -> str:
+    return await dispatch_action(service, spreadsheet_id, "delete", action, params)
+
+
+@server.resource("sheets://actions/{action}", name="sheets_action_contract")
+def sheets_action_contract(action: str) -> str:
+    """Read parameter requirements for a retained Sheets gap action."""
+    return json.dumps(action_contract(action), indent=2)

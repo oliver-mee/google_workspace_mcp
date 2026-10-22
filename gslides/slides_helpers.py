@@ -233,3 +233,43 @@ async def validate_insert_text_targets(
             "Shape or Table element ID, not the Page ID."
         )
     raise UserInputError(message)
+
+
+SLIDES_BATCH_UPDATE_REQUESTS_JSON_SCHEMA_EXTRA = {
+    "minItems": 1,
+    "items": {
+        "anyOf": [
+            {
+                "type": "object",
+                "properties": {name: {"type": "object"}},
+                "required": [name],
+                "additionalProperties": False,
+            }
+            for name in sorted(_SLIDES_BATCH_REQUEST_TYPES)
+        ]
+    },
+}
+
+
+def strip_null_values(value: Any, *, _depth: int = 0) -> Any:
+    """Remove nulls emitted for strict-schema optional fields before Google API calls."""
+    if isinstance(value, dict):
+        cleaned = {}
+        for key, item in value.items():
+            if item is None:
+                continue
+            cleaned_item = strip_null_values(item, _depth=_depth + 1)
+            if _depth >= 2 and cleaned_item == {}:
+                continue
+            cleaned[key] = cleaned_item
+        return cleaned
+
+    if isinstance(value, list):
+        cleaned_items = [strip_null_values(item, _depth=_depth + 1) for item in value]
+        return [
+            item
+            for item in cleaned_items
+            if item is not None and not (isinstance(item, dict) and not item)
+        ]
+
+    return value

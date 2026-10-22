@@ -1387,7 +1387,7 @@ async def _fetch_grid_metadata(
     if not include_hyperlinks and not include_notes and not include_smart_chips:
         return "", "", ""
 
-    tight_range = _a1_range_for_values(resolved_range, values)
+    tight_range = _a1_range_for_values(resolved_range, values) or resolved_range
     if not tight_range:
         logger.info(
             "[read_sheet_values] Skipping grid metadata fetch for range '%s': "
@@ -1397,7 +1397,7 @@ async def _fetch_grid_metadata(
         return "", "", ""
 
     cell_count = _a1_range_cell_count(tight_range) or sum(len(row) for row in values)
-    if cell_count > MAX_GRID_METADATA_CELLS:
+    if (not values and not cell_count) or cell_count > MAX_GRID_METADATA_CELLS:
         logger.info(
             "[read_sheet_values] Skipping grid metadata fetch for large range "
             "'%s' (%d cells > %d limit)",

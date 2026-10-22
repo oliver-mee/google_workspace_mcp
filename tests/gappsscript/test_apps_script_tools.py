@@ -1660,7 +1660,7 @@ def _undecorated(tool):
             manage_script_project,
             " DELETE ",
             "drive",
-            "drive_full",
+            "drive_file",
             "_delete_script_project_impl",
             {"script_id": "s1"},
         ),
@@ -1692,7 +1692,7 @@ async def test_project_actions_authenticate_only_required_service(
         if tool is get_script_project
         else {
             "create": ("script", "script_projects"),
-            "delete": ("drive", "drive_full"),
+            "delete": ("drive", "drive_file"),
         }
     )
     # Rebuild to exercise both signatures, which are fixed at decoration time.

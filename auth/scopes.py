@@ -151,7 +151,7 @@ DOCS_SCOPES = [
 
 CALENDAR_SCOPES = [CALENDAR_SCOPE, CALENDAR_READONLY_SCOPE, CALENDAR_EVENTS_SCOPE]
 
-DRIVE_SCOPES = [DRIVE_SCOPE, DRIVE_READONLY_SCOPE, DRIVE_FILE_SCOPE]
+DRIVE_SCOPES = [DRIVE_READONLY_SCOPE, DRIVE_FILE_SCOPE]
 
 GMAIL_SCOPES = [
     GMAIL_READONLY_SCOPE,
@@ -201,7 +201,7 @@ SCRIPT_SCOPES = [
     SCRIPT_METRICS_SCOPE,  # Required for get_script_activity (metrics)
     SCRIPT_EXTERNAL_REQUEST_SCOPE,  # Required for scripts.run (execution API)
     SCRIPT_SCRIPTAPP_SCOPE,  # Required for scripts.run (execution API)
-    DRIVE_SCOPE,  # Required for manage_script_project delete (uses Drive API)
+    DRIVE_FILE_SCOPE,  # Project deletion is limited to files authorized to this app
 ]
 
 # Tool-to-scopes mapping
