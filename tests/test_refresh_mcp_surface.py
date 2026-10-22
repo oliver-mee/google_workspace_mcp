@@ -271,7 +271,7 @@ def test_registered_profiles_and_real_initialize(native, level):
                 "clientInfo": {"name": "synthetic", "version": "1"},
             },
         )
-        assert init["result"]["serverInfo"]["version"] == "2.1.2"
+        assert init["result"]["serverInfo"]["version"] == "2.1.2+ome.1"
         tools = {t["name"]: t for t in rpc(client, "tools/list")["result"]["tools"]}
         assert "sheets_read" in tools
         assert ("sheets_manage" in tools) == (level != "readonly")

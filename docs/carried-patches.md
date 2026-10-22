@@ -1,7 +1,7 @@
 # Carried patches on v2.1.2
 
 This integration candidate starts at upstream tag `v2.1.2`
-(`49e5e29bc1202ebf4e7218419cd8ff501de556f3`). It is not a published fork release.
+(`49e5e29bc1202ebf4e7218419cd8ff501de556f3`). Fork release `2.1.2+ome.1` carries the patches below.
 Use upstream names and arguments for overlapping operations; retired dispatcher
 actions have no compatibility aliases. Future upstream submissions must be split
 onto clean upstream branches.
@@ -46,3 +46,8 @@ uv run --frozen python scripts/dump_mcp_contract.py /tmp/contract.json --permiss
 Tests exercise registered MCP tools over streamable HTTP and synthetic OAuth
 routes. Google calls are mocked. Browser/connector acceptance, real Google OAuth,
 live API operations and deployment are separate acceptance steps.
+
+Before deployment, build from a clean Git archive and verify container startup,
+MCP initialize/tools/list with isolated configuration, and compatibility with a
+copy of any existing encrypted OAuth store. Preserve the prior image and store
+for rollback. Health alone does not establish OAuth or live-provider acceptance.
