@@ -20,10 +20,12 @@ cookie. This adapter narrows the pinned FastMCP implementation:
 - Only `Sec-Fetch-Site: same-origin` can use a remembered decision. Cross-site,
   same-site, `none` (including pasted links) and absent metadata still prompt.
 - The decision fingerprint includes the current resolved client record (including
-  CIMD metadata, authentication method and keys), exact redirect including query,
+  CIMD metadata, authentication method, inline keys and JWKS URL), exact redirect including query,
   effective scope set and resource. Cache refresh timestamps are excluded.
-- New or changed clients, metadata, keys, redirects, scopes or resources prompt.
+- New or changed clients, metadata, inline keys, JWKS URLs, redirects, scopes or resources prompt.
   Missing/tampered cookies and older weaker decision keys cannot confer approval.
+  Remote JWKS contents rotating behind an unchanged URL are not fingerprinted;
+  token-endpoint signature verification still uses FastMCP’s normal JWKS handling.
 - The rendered form carries a signed snapshot bound to its transaction and CSRF
   token. Metadata changes between rendering and submission require restarting.
   FastMCP still checks its CSRF store/double-submit cookies, issues the browser
