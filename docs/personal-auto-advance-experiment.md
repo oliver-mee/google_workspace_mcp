@@ -49,7 +49,8 @@ policy and does not recommend unconditional first-visit auto-advance.
    Google's token boundary. B can complete its own callback. State still refers
    to A's original downstream transaction; that is what state is meant to preserve.
 4. A downstream requiring the matching initiating-browser session rejects B's
-   callback before token exchange/attachment. A deliberately permissive downstream
+   callback before downstream MCP code exchange/attachment. The proxy has already
+   exchanged the mocked Google code at this point; no downstream attachment yet. A deliberately permissive downstream
    which relies only on server-held state and PKCE can exchange the code and attach
    B's synthetic grant to A's pending transaction. This is a negative control.
 
