@@ -159,6 +159,7 @@ filterwarnings = [
 
 [tool.setuptools.package-data]
 core = ["tool_tiers.yaml"]
+auth = ["assets/*.svg", "assets/NOTICE.txt"]
 
 [tool.uv]
 # Security floors for transitively-pulled deps (not direct dependencies).

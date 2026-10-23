@@ -123,9 +123,9 @@ def test_compact_real_page_and_full_pkce_exchange(native):
     c, p, google, client_id = native
     r = page(c, start(c, client_id))
     assert r.status_code == 200
-    assert "Connect your account" in r.text
-    assert '<header class="brand">Preface Workspace</header>' in r.text
-    assert "<details><summary>" in r.text
+    assert "Google Workspace" in r.text
+    assert "Preface Workspace" not in r.text
+    assert "<details" not in r.text
     assert "<script" not in r.text
     assert "frame-ancestors" in r.headers["content-security-policy"]
     assert r.headers["cache-control"] == "no-store"
@@ -508,8 +508,9 @@ def test_forged_chatgpt_domain_and_name_do_not_inherit_trust(native, monkeypatch
     )
     r = page(c, start(c, client_id), "same-origin")
     assert r.status_code == 200
-    assert "chatgpt.com.attacker.test" in r.text
-    assert "provided by the app" in r.text
+    assert "Local app · http://localhost:9876" in r.text
+    assert "https://chatgpt.com.attacker.test/client.json" not in r.text
+    assert "Verified" not in r.text
     google.fetch_token.assert_not_awaited()
 
 
@@ -597,22 +598,39 @@ class PageContent(HTMLParser):
             (self.details if self.details_depth else self.default).append(data)
 
 
-def test_default_page_defers_raw_protocol_fields_but_shows_destination(native):
+def test_staff_page_omits_protocol_fields_entirely_and_keeps_native_form(native):
     c, _, _, client_id = native
     response = page(c, start(c, client_id))
     content = PageContent(response.text)
-    default = " ".join(" ".join(content.default).split())
-    details = " ".join(content.details)
-    assert content.details_closed
-    assert "Connect your account" in default
-    assert "Preface Workspace" in default
-    assert "Continue with Google" in default and "Cancel" in default
-    assert "Returns to Local app · http://localhost:9876" in default
-    assert default.count("started this connection") == 1
-    for raw in (REDIRECT, client_id, "openid", "Client authentication"):
-        assert raw in details
-        assert raw not in default
-    assert "Connection details" in details
+    text = " ".join(" ".join(content.default).split())
+    assert "Google Workspace" in text
+    assert "Continue with Google" in text and "Cancel" in text
+    assert "For Local app · http://localhost:9876" in text
+    assert text.count("started this connection") == 1
+    assert not content.details and "<details" not in response.text
+    for raw in (
+        REDIRECT,
+        client_id,
+        "openid",
+        "Client authentication",
+        "Connection details",
+        "Requested permissions",
+    ):
+        assert raw not in response.text
+    assert set(Fields(response.text).fields) == {
+        "txn_id",
+        "csrf_token",
+        "submit",
+        "approval_context",
+    }
+    # Hiding protocol display must not change approval or denial semantics.
+    denied = c.post(
+        str(response.url), data={**Fields(response.text).fields, "action": "deny"}
+    )
+    assert denied.status_code == 302
+    assert parse_qs(urlsplit(denied.headers["location"]).query)["error"] == [
+        "access_denied"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -689,12 +707,10 @@ def test_destination_presentation_does_not_treat_userinfo_as_hostname():
     )
     assert destination_identity("http://example.test/callback") == "http://example.test"
     assert destination_identity("https://faß.example/callback") == "xn--fa-hia.example"
-    assert (
-        destination_identity("not a URI") == "See return address in connection details"
-    )
+    assert destination_identity("not a URI") == "Return address unavailable"
     assert (
         destination_identity("https://example.test:bad/callback")
-        == "See return address in connection details"
+        == "Return address unavailable"
     )
 
 
@@ -702,7 +718,7 @@ def test_presentation_escapes_operator_and_protocol_values():
     from types import SimpleNamespace
     from auth.oauth_consent import compact_consent
 
-    # Inputs that must not become markup, including text hidden in the disclosure.
+    # Client values must not become markup or inject asset paths.
     value = '<img src=x onerror="alert(1)">&'
     text = compact_consent(
         {"txn_id": "txn", "csrf_token": value, "submit": "true"},
@@ -719,3 +735,68 @@ def test_presentation_escapes_operator_and_protocol_values():
     assert "&lt;img" in text
     assert Fields(text).fields["csrf_token"] == value
     assert "attacker.test" in " ".join(PageContent(text).default)
+
+
+def test_personal_page_never_infers_operator_logo_from_client_or_server(
+    native, monkeypatch
+):
+    c, _, _, cid = native
+    monkeypatch.delenv("WORKSPACE_MCP_CONSENT_LOGO", raising=False)
+    response = page(c, start(c, cid))
+    assert 'class="preface-mark"' not in response.text
+    assert 'class="google-g"' in response.text
+    assert "Preface Workspace" not in response.text
+    assert "<title>Google Workspace</title>" in response.text
+
+
+def test_explicit_work_logo_is_bundled_not_remote_and_post_still_valid(
+    native, monkeypatch
+):
+    c, _, google, cid = native
+    monkeypatch.setenv("WORKSPACE_MCP_CONSENT_LOGO", "preface")
+    response = page(c, start(c, cid))
+    assert 'class="preface-mark" role="img" aria-label="Preface"' in response.text
+    assert 'id="logomark-P"' in response.text
+    assert response.text.index('class="preface-mark"') < response.text.index(
+        '<h1 id="title">Google Workspace</h1>'
+    )
+    assert "Preface Workspace" not in response.text
+    assert "<img" not in response.text and "<script" not in response.text
+    assert "default-src 'none'" in response.headers["content-security-policy"]
+    assert "unsafe-inline" not in response.headers["content-security-policy"]
+    assert callback(c, approve(c, response)).status_code == 302
+    google.fetch_token.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "untrusted",
+    ["https://attacker.test/logo.svg", "../../secret.svg", '<svg onload="alert(1)">'],
+)
+def test_logo_option_cannot_load_arbitrary_svg_or_url(native, monkeypatch, untrusted):
+    c, _, _, cid = native
+    monkeypatch.setenv("WORKSPACE_MCP_CONSENT_LOGO", untrusted)
+    response = page(c, start(c, cid))
+    assert response.status_code == 200
+    assert 'class="preface-mark"' not in response.text
+    assert untrusted not in response.text
+
+
+def test_reviewed_asset_files_have_no_active_or_remote_content():
+    from pathlib import Path
+    import xml.etree.ElementTree as ET
+    from auth.oauth_consent import _bundled_svg
+
+    assets = Path(__file__).parents[2] / "auth/assets"
+    for name in ["google-g.svg", "preface-wordmark.svg"]:
+        raw = (assets / name).read_text()
+        root = ET.fromstring(raw)
+        assert root.tag.endswith("svg")
+        for element in root.iter():
+            assert element.tag.rsplit("}", 1)[-1] in {"svg", "g", "path"}
+            assert not any(
+                key.lower().startswith("on") or key.endswith("href")
+                for key in element.attrib
+            )
+        assert "<svg" in _bundled_svg(name)
+    with pytest.raises(ValueError):
+        _bundled_svg("../../secret.svg")

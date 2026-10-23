@@ -1,0 +1,5 @@
+Google G vector: unchanged path geometry/colors from the Google Identity branding-guidelines official HTML button configurator, retrieved 2026-10-23.
+https://developers.google.com/identity/branding-guidelines
+Code samples licensed Apache 2.0 by Google; Google marks remain Google trademarks. This is an operator-hosted OAuth connection page, not a Google-hosted sign-in page.
+
+Preface wordmark: official operator-supplied Preface logo kit v1.6, grey #404041, vector outlines. Public brand identity verified at https://www.preface.ai/ and its public Cloudinary preface_logo asset. Preface retains ownership of its marks. Only the logo export is bundled; no font, private kit documentation or operational files.

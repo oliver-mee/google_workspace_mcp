@@ -1,18 +1,25 @@
 # OAuth approval and client listing metadata
 
-The approval page leads with the configured operator name and a short connection
-heading. “Continue with Google” explains the next step; Cancel declines the same
-native consent transaction. The app name appears alongside its actual validated
-return hostname. Client-provided names do not establish trust: full ASCII/IDNA
-hostnames remain visible, local/custom-scheme destinations are labelled, and no
-hostname is shortened or given a verification badge.
+The Google-provider approval page shows **Google Workspace**, one short explanation,
+the app name with its actual validated return hostname, and Continue with Google /
+Cancel. There is no technical disclosure: raw callback URL, client ID, auth method
+and scope strings are absent from the user-facing HTML. Transaction/CSRF/signed
+hidden inputs and native approval/denial semantics are preserved. Troubleshooting
+belongs in native contract inspection and operator records, not the staff page.
 
-Raw callback URL, client ID, authentication method and scope strings sit inside
-closed “Connection details”. One initiation reminder stays beside the actions.
-A readable operator textmark avoids remote image requests on this sensitive page;
-MCP initialize still advertises configured icons and website. This is the
-operator's connection page, not a Google-authored sign-in page. No JavaScript
-submits or approves the form. Auth policy and browser binding are unchanged.
+The Google button uses the actual vector from Google's official HTML button
+configurator, locally bundled with its source notice. No script or remote asset
+is loaded. Optional `WORKSPACE_MCP_CONSENT_LOGO=preface` places the actual bundled
+Preface wordmark above Google Workspace; unset shows no operator logo. Unknown
+values cannot load arbitrary files/URLs. Client-provided icons/branding are never
+inlined. This presentation setting does not rename MCP initialize or alter OAuth.
+
+Client names do not establish trust. Full ASCII/IDNA return hosts remain visible
+without full callback paths/queries; local/custom-scheme destinations are labelled
+honestly and no guessed verification badge is shown. This is an operator-hosted
+connection page, not a Google-authored login page. It collects no Google password.
+One short initiation reminder remains near the actions. The restrictive hashed
+stylesheet CSP and all auth protections remain unchanged by this presentation.
 
 ## Consent policy and threat model
 
@@ -97,14 +104,15 @@ No dependency, OAuth store, signing key, profile or Google scope migration is
 required. Existing issued access/refresh tokens and registrations are unaffected.
 An approval form opened before this adapter was installed must be restarted;
 older remembered decisions require one new explicit approval. Do not delete
-credential stores to accomplish this. No new trust configuration is required.
+credential stores to accomplish this. No new trust configuration is required for the UI; the separate finite personal
+auto-advance experiment is documented in [its own record](personal-auto-advance-experiment.md).
 A deployment and live browser/ChatGPT acceptance remain separate release gates.
 
 ## Source metadata and ChatGPT listing checklist
 
 | Field | Source ownership/default | What an app owner should check |
 |---|---|---|
-| MCP server name | `WORKSPACE_MCP_BRAND_NAME`; default `Google Workspace` | Set a distinct operator/service name; compare native initialize and approval page |
+| MCP server name | `WORKSPACE_MCP_BRAND_NAME`; default `Google Workspace` | Set a distinct operator/service name; compare native initialize; the Google-provider page uses the Google Workspace product label |
 | MCP server version | Installed `workspace-mcp` package metadata; `dev` only when package metadata is absent | Compare initialize to the installed release; there is no app-listing version override |
 | MCP icons | `WORKSPACE_MCP_BRAND_ICON_URL`; absent when unset | Configure an operator-owned public HTTPS image; verify native initialize and client rendering |
 | MCP website | `WORKSPACE_MCP_BRAND_WEBSITE_URL`; absent when unset | Configure the actual operator/service website; a fork must not invent an operator URL |

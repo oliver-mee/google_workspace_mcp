@@ -9,9 +9,12 @@ import hashlib
 import hmac
 import html
 import json
+import os
 import secrets
 from contextvars import ContextVar
 from html.parser import HTMLParser
+from functools import lru_cache
+from pathlib import Path
 from ipaddress import ip_address
 from urllib.parse import urlsplit
 
@@ -69,28 +72,26 @@ class ConsentForm(HTMLParser):
 
 
 _STYLE = """
-*{box-sizing:border-box}body{margin:0;background:#f5f6f8;color:#19232c;
-font:16px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-min-height:100vh;display:grid;place-items:center;padding:24px}
-main{width:100%;max-width:440px;background:white;border:1px solid #dde2e7;
-border-radius:16px;padding:32px}.brand{font-size:18px;font-weight:650;
-color:#244b3a;margin-bottom:24px;overflow-wrap:anywhere}
-h1{font-size:26px;line-height:1.25;letter-spacing:-.5px;margin:0 0 12px}
-p{margin:0 0 20px}.muted{color:#52616c;font-size:14px}
-.connection{margin:24px 0;overflow-wrap:anywhere}.connection strong{display:block}
-.destination{display:block;color:#52616c;font-size:14px;margin-top:4px}
-details{border-top:1px solid #e5e9ed;padding-top:16px;font-size:14px}
-summary{cursor:pointer;font-weight:500;min-height:28px;color:#52616c}
-summary:hover{color:#19232c}dl{margin:12px 0 0}
-dt{font-weight:600;margin-top:12px}dd{margin:2px 0 0;color:#52616c;overflow-wrap:anywhere}
-ul{padding-left:18px}.reminder{color:#52616c;font-size:13px;margin:20px 0 12px}
-button{font:inherit;min-height:48px;border-radius:10px;width:100%;cursor:pointer;
-font-weight:600}button[value=approve]{background:#244b3a;color:white;border:1px solid #244b3a}
-button[value=approve]:hover{background:#1c3c2e}button[value=deny]{margin-top:8px;
-background:white;color:#364550;border:1px solid transparent}
-button[value=deny]:hover{background:#f5f6f8}:focus-visible{outline:3px solid #2563eb;
-outline-offset:4px}::selection{background:#dcebe2;color:#19232c}
-@media(max-width:480px){body{padding:16px}main{padding:24px}h1{font-size:24px}}
+*{box-sizing:border-box}body{margin:0;background:#f8fafd;color:#1f1f1f;
+font:16px/1.5 Arial,sans-serif;min-height:100vh;display:grid;place-items:center;
+padding:24px}main{width:100%;max-width:440px;background:#fff;
+border:1px solid #e1e3e1;border-radius:16px;padding:40px}
+.preface-mark{display:block;width:216px;max-width:100%;height:auto;margin-bottom:28px}
+h1{font-size:28px;font-weight:400;line-height:1.25;letter-spacing:-.3px;
+margin:0 0 20px}p{margin:0 0 12px;overflow-wrap:anywhere}strong{font-weight:600}
+.destination{color:#444746;font-size:14px;margin-bottom:32px;overflow-wrap:anywhere}
+.reminder{color:#444746;font-size:13px;margin:0 0 16px}
+button{font:inherit;cursor:pointer;width:100%;min-height:44px}
+button[value=approve]{display:flex;align-items:center;justify-content:center;
+gap:10px;padding:0 12px;background:#fff;color:#1f1f1f;border:1px solid #747775;
+border-radius:4px;font:500 14px/20px Arial,sans-serif;letter-spacing:.25px}
+.google-g{display:block;flex:none;width:20px;height:20px}
+button[value=approve]:hover{background:#f7f8f8;border-color:#5c5f5e}
+button[value=deny]{background:transparent;border:0;border-radius:4px;color:#174ea6;
+font-size:14px;font-weight:500;margin-top:8px}button[value=deny]:hover{background:#f1f5fe}
+:focus-visible{outline:3px solid #1a73e8;outline-offset:4px}
+::selection{background:#d3e3fd;color:#1f1f1f}
+@media(max-width:480px){body{padding:16px}main{padding:28px 24px}}
 """
 _CSP = (
     "default-src 'none'; style-src 'sha256-"
@@ -111,7 +112,7 @@ def destination_identity(redirect_uri: str) -> str:
         scheme = parsed.scheme.lower()
         host = parsed.hostname
         if not scheme:
-            return "See return address in connection details"
+            return "Return address unavailable"
         if host:
             try:
                 address = ip_address(host)
@@ -128,43 +129,57 @@ def destination_identity(redirect_uri: str) -> str:
         if scheme not in {"https", "http"}:
             return f"App link · {scheme}:" + (f"//{authority}" if authority else "")
         if not authority:
-            return "See return address in connection details"
+            return "Return address unavailable"
         if loopback:
             return f"Local app · {scheme}://{authority}"
         return authority if scheme == "https" else f"http://{authority}"
     except (ValueError, idna.IDNAError):
-        return "See return address in connection details"
+        return "Return address unavailable"
+
+
+@lru_cache(maxsize=2)
+def _bundled_svg(name):
+    # Fixed, reviewed local files only. Never load client/operator-supplied URLs
+    # or interpolate client data into SVG markup.
+    if name not in {"google-g.svg", "preface-wordmark.svg"}:
+        raise ValueError("Unknown bundled consent asset")
+    svg = (Path(__file__).with_name("assets") / name).read_text()
+    if svg.startswith("<?xml"):
+        svg = svg.split("?>", 1)[1].lstrip()
+    if name == "google-g.svg":
+        return svg.replace(
+            "<svg ", '<svg class="google-g" aria-hidden="true" focusable="false" ', 1
+        )
+    return svg.replace(
+        "<svg ", '<svg class="preface-mark" role="img" aria-label="Preface" ', 1
+    )
 
 
 def compact_consent(fields, *, client, transaction, server_name, approval_context):
-    """Render only escaped data; no script, remote asset or guessed trust badge."""
+    """Only the next human action and validated app destination; no protocol UI."""
     esc = html.escape
-    client_id = transaction.client_id
-    name = getattr(client, "client_name", None) or "this application"
-    brand = server_name or "Google Workspace"
+    name = getattr(client, "client_name", None) or "this app"
     inputs = "".join(
         f'<input type="hidden" name="{esc(key)}" value="{esc(value)}">'
         for key, value in {**fields, "approval_context": approval_context}.items()
     )
-    scopes = "".join(f"<li>{esc(scope)}</li>" for scope in transaction.scopes)
     destination = destination_identity(transaction.client_redirect_uri)
+    operator_logo = (
+        _bundled_svg("preface-wordmark.svg")
+        if os.getenv("WORKSPACE_MCP_CONSENT_LOGO", "").strip() == "preface"
+        else ""
+    )
+    google_icon = _bundled_svg("google-g.svg")
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Connect your account · {esc(brand)}</title><style>{_STYLE}</style></head>
-<body><main aria-labelledby="title"><header class="brand">{esc(brand)}</header>
-<h1 id="title">Connect your account</h1>
-<p>Next, sign in with Google to connect your workspace to this app.</p>
-<div class="connection"><strong>{esc(name)}</strong>
-<span class="destination">Returns to <bdi>{esc(destination)}</bdi></span></div>
-<details><summary>Connection details</summary><dl>
-<dt>App name (provided by the app)</dt><dd>{esc(name)}</dd>
-<dt>Full return address</dt><dd>{esc(transaction.client_redirect_uri)}</dd>
-<dt>Client ID</dt><dd>{esc(client_id)}</dd>
-<dt>Client authentication</dt><dd>{esc(getattr(client, "token_endpoint_auth_method", None) or "none")}</dd>
-<dt>Requested permissions</dt><dd><ul>{scopes}</ul></dd></dl></details>
-<p class="reminder">Continue only if you started this connection.</p>
+<title>Google Workspace</title><style>{_STYLE}</style></head>
+<body><main aria-labelledby="title">{operator_logo}
+<h1 id="title">Google Workspace</h1>
+<p>Connect your Google account to <strong>{esc(name)}</strong>.</p>
+<p class="destination">For <bdi>{esc(destination)}</bdi></p>
+<p class="reminder">Only continue if you started this connection.</p>
 <form id="consentForm" method="post" action="">{inputs}
-<button type="submit" name="action" value="approve">Continue with Google</button>
+<button type="submit" name="action" value="approve">{google_icon}<span>Continue with Google</span></button>
 <button type="submit" name="action" value="deny">Cancel</button></form>
 </main></body></html>"""
 
