@@ -57,7 +57,7 @@ def test_cold_entrypoint_contract(tmp_path, entrypoint, level):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     contract = json.loads(output.read_text())
-    assert contract["initialize"]["serverInfo"]["version"] == "2.1.2+ome.2"
+    assert contract["initialize"]["serverInfo"]["version"] == "2.1.2+ome.3"
     tools = {tool["name"]: tool for tool in contract["tools"]}
     assert "sheets_read" in tools
     assert ("sheets_manage" in tools) == (level != "readonly")
