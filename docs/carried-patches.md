@@ -1,7 +1,7 @@
 # Carried patches on v2.1.2
 
 This integration candidate starts at upstream tag `v2.1.2`
-(`49e5e29bc1202ebf4e7218419cd8ff501de556f3`). Fork release `2.1.2+ome.3` carries the patches below.
+(`49e5e29bc1202ebf4e7218419cd8ff501de556f3`). Fork release `2.1.2+ome.4` carries the patches below.
 Use upstream names and arguments for overlapping operations; retired dispatcher
 actions have no compatibility aliases. Future upstream submissions must be split
 onto clean upstream branches.
@@ -55,10 +55,19 @@ for rollback. Health alone does not establish OAuth or live-provider acceptance.
 ## OAuth approval presentation and remembered decisions
 
 The local provider delegates security processing to pinned FastMCP and supplies a
-compact escaped consent page. Remembered decisions bind exact client metadata,
+compact escaped consent page. By default, remembered decisions bind exact client metadata,
 redirect, scopes and resource and apply only to same-origin browser navigation.
-Cross-site ChatGPT requests still require approval; client authentication does not
+Cross-site ChatGPT requests normally require approval; client authentication does not
 prove which user initiated a ChatGPT connection. No trusted-domain bypass, dependency
 source patch, new scopes or token-store migration is introduced. Older open consent
 forms need restarting. See [OAuth approval and listing metadata](oauth-approval.md)
 for the threat model, adapter contract, defaults and client listing checklist.
+
+
+A separately configured finite personal auto-advance experiment is disabled by
+default. It requires an exact operator-pinned context plus signed prior browser
+approval and expires within24hours. It deliberately relaxes initiation consent,
+while retaining callback/token bindings; it is not a current-user-intent proof.
+See [experiment boundary and runtime configuration](personal-auto-advance-experiment.md).
+The staff page uses locally bundled official button/optional operator-logo files;
+no protocol-details disclosure or remote assets remain.
