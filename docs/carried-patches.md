@@ -1,7 +1,7 @@
 # Carried patches on v2.1.2
 
 This integration candidate starts at upstream tag `v2.1.2`
-(`49e5e29bc1202ebf4e7218419cd8ff501de556f3`). Fork release `2.1.2+ome.1` carries the patches below.
+(`49e5e29bc1202ebf4e7218419cd8ff501de556f3`). Fork release `2.1.2+ome.2` carries the patches below.
 Use upstream names and arguments for overlapping operations; retired dispatcher
 actions have no compatibility aliases. Future upstream submissions must be split
 onto clean upstream branches.
