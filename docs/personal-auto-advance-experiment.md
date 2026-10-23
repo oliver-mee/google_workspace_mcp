@@ -1,10 +1,10 @@
 # Isolated remembered auto-advance experiment
 
-This is a **test-only candidate**, not an application feature or production
-configuration. The normal `GoogleProvider`, entrypoints, scopes, stores and
-same-origin-only remembered-approval policy are unchanged. No environment flag
-installs this experiment. Never import its provider into a deployed service
-without a separate source review and a bounded operator decision.
+The diagnostic harness is **test-only**. A separate finite runtime adapter now
+supports an explicitly configured operator experiment; it is off by default.
+Scopes, stores and the normal same-origin remembered policy are unchanged when
+not configured. Runtime use requires review of that adapter and an operator
+choice accepting the initiation-consent relaxation described below.
 
 ## Question and narrow policy
 
@@ -123,8 +123,8 @@ prior matching browser approval. Retain the reviewed image/config rollback and
 keep work unchanged. Do not infer an actual identity/pin from this synthetic DCR
 fixture. Unknown or changed contexts must prompt. After review, a short window
 could repeat A/B above and compare a genuine same-browser run, then turn the
-experiment off without resetting stores. The present candidate does not ship
-that production toggle or execute any human/live-ChatGPT flow.
+experiment off without resetting stores. The finite runtime adapter below provides the separate operator configuration;
+no human/live-ChatGPT flow is executed by the diagnostic harness.
 
 Recommendation: keep the reviewed live policy while this evidence is reviewed.
 Automatic continuation cannot both accept arbitrary forwarded initial links and
@@ -133,3 +133,25 @@ actual ChatGPT rejects mismatched-browser attachment, that supplies evidence for
 its downstream boundary, not a universal guarantee or a property of redirecting
 quickly. Any later personal relaxation should name and accept its remaining
 initiation risk explicitly.
+
+## Finite runtime adapter
+
+`auth/auto_advance.py` implements the same remembered-context branch around the
+normal provider. `WORKSPACE_MCP_PERSONAL_AUTO_ADVANCE` is absent by default. An
+explicit JSON object must contain exactly `origin`, `started_at`, `expires_at`
+and `contexts`: an exact HTTPS issuer origin, integer Unix seconds with a
+positive window of at most24hours, and1-4 lowercase SHA256 context fingerprints.
+Invalid configuration rejects startup. Future/expired windows, a different issuer,
+non-remember consent mode and unmatched/missing signed approvals all fall back
+to the normal reviewed page. Expiry is checked on every request and again after
+context resolution. Already-started callbacks retain their ordinary transaction
+lifetime; expiry stops new automatic continuations rather than revoking grants.
+
+Obtain the pin from the actual native resolved client and a real validated
+transaction's exact redirect/scopes/resource, not a guessed client name/domain.
+Keep activation and metadata snapshots host-private. Copying a personal-origin
+configuration to a different issuer cannot activate the branch there. Removing
+the config and recreating the personal service disables it without resetting
+OAuth stores, keys or grants. Stable image/config rollback remains required.
+This flag deliberately relaxes cross-site initiation consent only for that
+finite pinned remembered context; it does not establish current browser intent.

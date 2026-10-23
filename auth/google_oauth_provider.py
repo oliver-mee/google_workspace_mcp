@@ -2,6 +2,7 @@
 
 from starlette.routing import Route
 
+from auth.auto_advance import FiniteAutoAdvanceMixin
 from auth.basic_client_auth import BasicClientIDEndpoint
 from auth.oauth_consent import WorkspaceConsentMixin
 from fastmcp.server.auth.providers.google import GoogleProvider as _GoogleProvider
@@ -9,7 +10,7 @@ from mcp.server.auth.provider import AuthorizationParams
 from mcp.shared.auth import OAuthClientInformationFull
 
 
-class GoogleProvider(WorkspaceConsentMixin, _GoogleProvider):
+class GoogleProvider(FiniteAutoAdvanceMixin, WorkspaceConsentMixin, _GoogleProvider):
     def get_routes(self, mcp_path=None):
         routes = super().get_routes(mcp_path)
         return [
