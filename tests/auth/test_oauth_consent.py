@@ -123,7 +123,8 @@ def test_compact_real_page_and_full_pkce_exchange(native):
     c, p, google, client_id = native
     r = page(c, start(c, client_id))
     assert r.status_code == 200
-    assert "Connect ChatGPT to Preface Workspace" in r.text
+    assert "Connect your account" in r.text
+    assert '<header class="brand">Preface Workspace</header>' in r.text
     assert "<details><summary>" in r.text
     assert "<script" not in r.text
     assert "frame-ancestors" in r.headers["content-security-policy"]
@@ -225,7 +226,7 @@ def test_remembered_real_client_still_prompts_for_external_navigation(native, si
     assert approve(c, page(c, start(c, client_id))).status_code == 302
     r = page(c, start(c, client_id), site)
     assert r.status_code == 200
-    assert "Approve connection" in r.text
+    assert "Continue with Google" in r.text
     google.fetch_token.assert_not_awaited()
 
 
@@ -268,7 +269,7 @@ def test_changed_context_cannot_reuse_approval(native, change):
         c.portal.call(modify)
     r = page(c, start(c, client_id, **kwargs), "same-origin")
     assert r.status_code == 200, r.text
-    assert "Approve connection" in r.text
+    assert "Continue with Google" in r.text
     if change == "branding":
         assert "&lt;img" in r.text
         assert "<img" not in r.text
@@ -508,7 +509,7 @@ def test_forged_chatgpt_domain_and_name_do_not_inherit_trust(native, monkeypatch
     r = page(c, start(c, client_id), "same-origin")
     assert r.status_code == 200
     assert "chatgpt.com.attacker.test" in r.text
-    assert "provided by client" in r.text
+    assert "provided by the app" in r.text
     google.fetch_token.assert_not_awaited()
 
 
@@ -564,3 +565,157 @@ def test_consent_form_contract_rejects_added_visible_or_duplicate_fields():
         parser = ConsentForm()
         parser.feed(original.replace("</form>", insertion + "</form>"))
         assert not parser.recognized
+
+
+class PageContent(HTMLParser):
+    """Read default/disclosed text independently of CSS and hidden form fields."""
+
+    def __init__(self, text):
+        super().__init__()
+        self.default = []
+        self.details = []
+        self.details_depth = 0
+        self.skip_depth = 0
+        self.details_closed = True
+        self.feed(text)
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "details":
+            self.details_depth += 1
+            self.details_closed &= "open" not in dict(attrs)
+        if tag in ("style", "title"):
+            self.skip_depth += 1
+
+    def handle_endtag(self, tag):
+        if tag == "details":
+            self.details_depth -= 1
+        if tag in ("style", "title"):
+            self.skip_depth -= 1
+
+    def handle_data(self, data):
+        if not self.skip_depth:
+            (self.details if self.details_depth else self.default).append(data)
+
+
+def test_default_page_defers_raw_protocol_fields_but_shows_destination(native):
+    c, _, _, client_id = native
+    response = page(c, start(c, client_id))
+    content = PageContent(response.text)
+    default = " ".join(" ".join(content.default).split())
+    details = " ".join(content.details)
+    assert content.details_closed
+    assert "Connect your account" in default
+    assert "Preface Workspace" in default
+    assert "Continue with Google" in default and "Cancel" in default
+    assert "Returns to Local app · http://localhost:9876" in default
+    assert default.count("started this connection") == 1
+    for raw in (REDIRECT, client_id, "openid", "Client authentication"):
+        assert raw in details
+        assert raw not in default
+    assert "Connection details" in details
+
+
+@pytest.mark.parametrize(
+    "redirect,identity,application_type",
+    [
+        (
+            "https://chatgpt.com/callback?next=https://attacker.test",
+            "chatgpt.com",
+            "web",
+        ),
+        (
+            "https://chatgpt.com.attacker.test/callback",
+            "chatgpt.com.attacker.test",
+            "web",
+        ),
+        ("https://xn--pple-koa.example/callback", "xn--pple-koa.example", "web"),
+        ("https://äpple.example/callback", "xn--pple-koa.example", "web"),
+        (
+            "http://localhost:9876/callback",
+            "Local app · http://localhost:9876",
+            "native",
+        ),
+        (
+            "http://127.0.0.1:8765/callback",
+            "Local app · http://127.0.0.1:8765",
+            "native",
+        ),
+        ("http://[::1]:9000/callback", "Local app · http://[::1]:9000", "native"),
+        ("com.example.app:/callback", "App link · com.example.app:", "native"),
+        ("vscode://company/callback", "App link · vscode://company", "native"),
+        (
+            "https://"
+            + "a" * 50
+            + "."
+            + "b" * 50
+            + "."
+            + "c" * 50
+            + ".example/callback",
+            "a" * 50 + "." + "b" * 50 + "." + "c" * 50 + ".example",
+            "web",
+        ),
+    ],
+)
+def test_native_validated_redirect_identity_is_visible_without_truncation(
+    native, redirect, identity, application_type
+):
+    c, _, google, _ = native
+    registered = c.post(
+        "/register",
+        json={
+            "client_name": "ChatGPT",
+            "redirect_uris": [redirect],
+            "application_type": application_type,
+            "scope": "openid",
+        },
+    )
+    assert registered.status_code == 201, registered.text
+    response = page(c, start(c, registered.json()["client_id"], redirect=redirect))
+    assert response.status_code == 200, response.text
+    text = " ".join(PageContent(response.text).default)
+    assert identity in text
+    assert "Verified" not in text
+    assert "…" not in text
+    assert "<bdi>" in response.text  # preserve host reading order in surrounding copy
+    google.fetch_token.assert_not_awaited()
+
+
+def test_destination_presentation_does_not_treat_userinfo_as_hostname():
+    from auth.oauth_consent import destination_identity
+
+    assert (
+        destination_identity("https://chatgpt.com@attacker.test/callback")
+        == "attacker.test"
+    )
+    assert destination_identity("http://example.test/callback") == "http://example.test"
+    assert destination_identity("https://faß.example/callback") == "xn--fa-hia.example"
+    assert (
+        destination_identity("not a URI") == "See return address in connection details"
+    )
+    assert (
+        destination_identity("https://example.test:bad/callback")
+        == "See return address in connection details"
+    )
+
+
+def test_presentation_escapes_operator_and_protocol_values():
+    from types import SimpleNamespace
+    from auth.oauth_consent import compact_consent
+
+    # Inputs that must not become markup, including text hidden in the disclosure.
+    value = '<img src=x onerror="alert(1)">&'
+    text = compact_consent(
+        {"txn_id": "txn", "csrf_token": value, "submit": "true"},
+        client=SimpleNamespace(client_name=value, token_endpoint_auth_method=value),
+        transaction=SimpleNamespace(
+            client_id=value,
+            client_redirect_uri="https://attacker.test/callback?q=" + value,
+            scopes=[value],
+        ),
+        server_name=value,
+        approval_context=value,
+    )
+    assert "<img" not in text and "<script" not in text
+    assert "&lt;img" in text
+    assert Fields(text).fields["csrf_token"] == value
+    assert "attacker.test" in " ".join(PageContent(text).default)

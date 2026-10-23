@@ -1,10 +1,18 @@
 # OAuth approval and client listing metadata
 
-The compact approval page uses the configured server name, readable client name,
-visible full return address and collapsed client ID/authentication/scopes. Client
-names are explicitly labelled as client supplied. A server monogram avoids remote
-image requests on this sensitive page; MCP initialize still advertises configured
-icons and website. No JavaScript submits or approves the form.
+The approval page leads with the configured operator name and a short connection
+heading. “Continue with Google” explains the next step; Cancel declines the same
+native consent transaction. The app name appears alongside its actual validated
+return hostname. Client-provided names do not establish trust: full ASCII/IDNA
+hostnames remain visible, local/custom-scheme destinations are labelled, and no
+hostname is shortened or given a verification badge.
+
+Raw callback URL, client ID, authentication method and scope strings sit inside
+closed “Connection details”. One initiation reminder stays beside the actions.
+A readable operator textmark avoids remote image requests on this sensitive page;
+MCP initialize still advertises configured icons and website. This is the
+operator's connection page, not a Google-authored sign-in page. No JavaScript
+submits or approves the form. Auth policy and browser binding are unchanged.
 
 ## Consent policy and threat model
 
@@ -40,24 +48,29 @@ is not authentication for arbitrary HTTP callers; the signed browser cookies are
 also required. Compromised browsers/origins and stolen cookies are outside this
 protection's boundary. Clearing browser cookies simply requires another approval.
 
-### Why ChatGPT cannot safely skip every prompt
+### Cross-site prompting and limits of the evidence
 
-An attacker can start a connection in their **own ChatGPT session**, obtain its
-legitimate authorization link and send that link to another user. The real ChatGPT
-client can possess the PKCE verifier and later sign a valid `private_key_jwt`.
-CIMD domain authenticity, correct redirect registration, a matching client name,
-Google Internal eligibility and even authenticated ChatGPT transport identify
-software/organization, not which user intended to connect that ChatGPT session.
-Silently approving that link can deliver the victim's Google access to the
-attacker's ChatGPT connection. Ordinary state binds the downstream session but
-is not an independently authenticated browser-intent signal at this proxy.
+A pre-approval MCP authorization link can be forwarded to another browser. The
+generic confused-deputy/AS-in-the-middle threat model considers someone starting
+a request in their own client session and having another person approve it. **If
+the downstream client accepts the callback across that browser/user boundary**,
+silent upstream approval could connect the wrong person's Google access. This is
+a conditional threat scenario, not an observed ChatGPT exploit.
 
-Consequently there is **no cross-site ChatGPT preauthorization bypass** here.
-Genuine cross-site ChatGPT arrivals continue to show the compact page even after
-approval. Broader silent continuation would require a protocol establishing an
-unforgeable initiating-browser/user binding, which has not been demonstrated.
-Synthetic same-origin remembered-flow tests are not evidence of live ChatGPT
-silent continuation.
+CIMD, redirect registration, PKCE and `private_key_jwt` identify and bind client
+protocol exchanges; at this proxy they do not independently establish the
+initiating browser/user. Our synthetic native tests exercise those protocol and
+proxy-binding properties. They do **not** demonstrate that real ChatGPT accepts
+a forwarded callback or completes account linking across different browsers or
+users. ChatGPT's own state/session checks may reject that flow; live adversarial
+ChatGPT behavior has not been tested.
+
+The existing cross-site approval protection therefore remains unchanged.
+Cross-site ChatGPT arrivals still show the page, even after remembered approval.
+We have not established enough downstream/browser binding evidence to justify
+an automatic bypass here. This is a conservative proxy policy, not a claim that
+ChatGPT lacks additional protections. Synthetic same-origin remembered-flow
+tests are also not evidence of live ChatGPT silent continuation.
 
 OpenAI documents CIMD public-client and signed-assertion flows, with a transition
 between singular and plural method metadata. This candidate keeps the pinned

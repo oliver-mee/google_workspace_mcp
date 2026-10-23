@@ -12,6 +12,10 @@ import json
 import secrets
 from contextvars import ContextVar
 from html.parser import HTMLParser
+from ipaddress import ip_address
+from urllib.parse import urlsplit
+
+import idna
 
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
@@ -69,21 +73,23 @@ _STYLE = """
 font:16px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
 min-height:100vh;display:grid;place-items:center;padding:24px}
 main{width:100%;max-width:440px;background:white;border:1px solid #dde2e7;
-border-radius:20px;padding:32px;box-shadow:0 12px 40px #19232c08}
-.mark{width:44px;height:44px;border-radius:12px;background:#eaf1ee;color:#284d3b;
-display:grid;place-items:center;font-weight:700;font-size:22px;margin-bottom:20px}
-h1{font-size:25px;line-height:1.25;letter-spacing:-.5px;margin:0 0 14px}
-p{margin:0 0 16px}.muted,footer{color:#52616c;font-size:14px}
-.destination{background:#f5f6f8;border-radius:10px;padding:12px;font-size:14px;
-margin:20px 0;overflow-wrap:anywhere}.destination strong{display:block}
-details{border-top:1px solid #e5e9ed;padding:16px 0;font-size:14px}
-summary{cursor:pointer;font-weight:600;min-height:28px}dl{margin:12px 0 0}
+border-radius:16px;padding:32px}.brand{font-size:18px;font-weight:650;
+color:#244b3a;margin-bottom:24px;overflow-wrap:anywhere}
+h1{font-size:26px;line-height:1.25;letter-spacing:-.5px;margin:0 0 12px}
+p{margin:0 0 20px}.muted{color:#52616c;font-size:14px}
+.connection{margin:24px 0;overflow-wrap:anywhere}.connection strong{display:block}
+.destination{display:block;color:#52616c;font-size:14px;margin-top:4px}
+details{border-top:1px solid #e5e9ed;padding-top:16px;font-size:14px}
+summary{cursor:pointer;font-weight:500;min-height:28px;color:#52616c}
+summary:hover{color:#19232c}dl{margin:12px 0 0}
 dt{font-weight:600;margin-top:12px}dd{margin:2px 0 0;color:#52616c;overflow-wrap:anywhere}
-ul{padding-left:18px}button{font:inherit;min-height:46px;border-radius:10px;
-width:100%;cursor:pointer;font-weight:600}button[value=approve]{background:#244b3a;
-color:white;border:1px solid #244b3a}button[value=deny]{margin-top:8px;background:white;
-color:#364550;border:1px solid #ced7df}:focus-visible{outline:3px solid #2563eb;
-outline-offset:4px}footer{margin-top:18px;font-size:12px}
+ul{padding-left:18px}.reminder{color:#52616c;font-size:13px;margin:20px 0 12px}
+button{font:inherit;min-height:48px;border-radius:10px;width:100%;cursor:pointer;
+font-weight:600}button[value=approve]{background:#244b3a;color:white;border:1px solid #244b3a}
+button[value=approve]:hover{background:#1c3c2e}button[value=deny]{margin-top:8px;
+background:white;color:#364550;border:1px solid transparent}
+button[value=deny]:hover{background:#f5f6f8}:focus-visible{outline:3px solid #2563eb;
+outline-offset:4px}::selection{background:#dcebe2;color:#19232c}
 @media(max-width:480px){body{padding:16px}main{padding:24px}h1{font-size:24px}}
 """
 _CSP = (
@@ -91,6 +97,43 @@ _CSP = (
     + base64.b64encode(hashlib.sha256(_STYLE.encode()).digest()).decode()
     + "'; base-uri 'none'; frame-ancestors 'none'"
 )
+
+
+def destination_identity(redirect_uri: str) -> str:
+    """Describe the validated return destination, without trusting app branding.
+
+    Keep full ASCII/IDNA hosts (no ellipsis or registrable-domain shortening).
+    Local and custom-scheme destinations must not look like verified websites.
+    This is display only; redirect validation remains entirely upstream.
+    """
+    try:
+        parsed = urlsplit(redirect_uri)
+        scheme = parsed.scheme.lower()
+        host = parsed.hostname
+        if not scheme:
+            return "See return address in connection details"
+        if host:
+            try:
+                address = ip_address(host)
+            except ValueError:
+                host = idna.encode(host, uts46=True).decode("ascii").lower()
+                loopback = host.rstrip(".") == "localhost"
+            else:
+                loopback = address.is_loopback
+                host = f"[{host}]" if address.version == 6 else host
+            authority = host + (f":{parsed.port}" if parsed.port is not None else "")
+        else:
+            authority = ""
+            loopback = False
+        if scheme not in {"https", "http"}:
+            return f"App link · {scheme}:" + (f"//{authority}" if authority else "")
+        if not authority:
+            return "See return address in connection details"
+        if loopback:
+            return f"Local app · {scheme}://{authority}"
+        return authority if scheme == "https" else f"http://{authority}"
+    except (ValueError, idna.IDNAError):
+        return "See return address in connection details"
 
 
 def compact_consent(fields, *, client, transaction, server_name, approval_context):
@@ -104,23 +147,25 @@ def compact_consent(fields, *, client, transaction, server_name, approval_contex
         for key, value in {**fields, "approval_context": approval_context}.items()
     )
     scopes = "".join(f"<li>{esc(scope)}</li>" for scope in transaction.scopes)
+    destination = destination_identity(transaction.client_redirect_uri)
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Connect {esc(name)} to {esc(brand)}</title><style>{_STYLE}</style></head>
-<body><main aria-labelledby="title"><div class="mark" aria-hidden="true">{esc(brand[:1].upper())}</div>
-<h1 id="title">Connect {esc(name)} to {esc(brand)}</h1>
-<p>Only approve if you started this connection in the application you want to use.</p>
-<p class="muted">You’ll sign in with Google next. This lets the application use the access listed below.</p>
-<div class="destination">Return address<strong>{esc(transaction.client_redirect_uri)}</strong></div>
-<details><summary>Connection details and permissions</summary><dl>
-<dt>Application name (provided by client)</dt><dd>{esc(name)}</dd>
+<title>Connect your account · {esc(brand)}</title><style>{_STYLE}</style></head>
+<body><main aria-labelledby="title"><header class="brand">{esc(brand)}</header>
+<h1 id="title">Connect your account</h1>
+<p>Next, sign in with Google to connect your workspace to this app.</p>
+<div class="connection"><strong>{esc(name)}</strong>
+<span class="destination">Returns to <bdi>{esc(destination)}</bdi></span></div>
+<details><summary>Connection details</summary><dl>
+<dt>App name (provided by the app)</dt><dd>{esc(name)}</dd>
+<dt>Full return address</dt><dd>{esc(transaction.client_redirect_uri)}</dd>
 <dt>Client ID</dt><dd>{esc(client_id)}</dd>
 <dt>Client authentication</dt><dd>{esc(getattr(client, "token_endpoint_auth_method", None) or "none")}</dd>
 <dt>Requested permissions</dt><dd><ul>{scopes}</ul></dd></dl></details>
+<p class="reminder">Continue only if you started this connection.</p>
 <form id="consentForm" method="post" action="">{inputs}
-<button type="submit" name="action" value="approve">Approve connection</button>
+<button type="submit" name="action" value="approve">Continue with Google</button>
 <button type="submit" name="action" value="deny">Cancel</button></form>
-<footer>Do not approve a connection link sent by someone else. Cancel if you don’t recognise the return address.</footer>
 </main></body></html>"""
 
 
