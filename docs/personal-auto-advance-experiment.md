@@ -1,4 +1,37 @@
-# Isolated remembered auto-advance experiment
+# Personal auto-advance experiment
+
+## First-visit personal trial — November 2026
+
+The operator can add `"first_visit": true` to the existing finite personal JSON
+configuration. The exact pinned resolved client/redirect/scopes/resource context
+then redirects to Google even in a fresh browser, without a prior approval cookie.
+A new signed per-transaction browser-binding cookie is still issued before redirect.
+Google authentication/consent remains Google's decision. Unknown or changed
+contexts retain the normal approval page. Preface has no experiment configuration.
+
+This deliberately removes our explicit initiation confirmation, including first
+visits; it does not establish which downstream account initiated the navigation.
+A forwarded URL remains possible. Actual ChatGPT cross-browser account attachment
+has not been demonstrated. State/PKCE/client authentication and callback browser
+binding remain enforced; these do not replace initiation confirmation. No access
+token is put into the redirect URL. The trial remains off by default and limited
+to an explicitly configured issuer/context and a maximum 24-hour window.
+
+Omitting `first_visit` (or setting false) preserves the older remembered-only
+behavior. Non-boolean values and unknown configuration fields reject startup.
+Expiry falls back to the normal page, without revoking existing grants. Remove
+configuration/recreate personal to disable early; preserve keys and stores.
+
+Human acceptance: Oliver starts a personal ChatGPT connection in a fresh browser
+profile. If its resolved context still matches the pin, it should go directly to
+Google and then return to ChatGPT. Confirm one bounded read. A fallback approval
+page means context/policy did not qualify; do not broaden the pin speculatively.
+No agent laptop control or live adversarial tests are authorized by this trial.
+
+The remaining sections record the earlier remembered-only diagnostic experiment.
+Their prior-approval requirement applies to that older mode, not first-visit mode.
+
+## Historical remembered-only experiment
 
 The diagnostic harness is **test-only**. A separate finite runtime adapter now
 supports an explicitly configured operator experiment; it is off by default.
@@ -139,7 +172,7 @@ initiation risk explicitly.
 `auth/auto_advance.py` implements the same remembered-context branch around the
 normal provider. `WORKSPACE_MCP_PERSONAL_AUTO_ADVANCE` is absent by default. An
 explicit JSON object must contain exactly `origin`, `started_at`, `expires_at`
-and `contexts`: an exact HTTPS issuer origin, integer Unix seconds with a
+and `contexts`, with optional boolean `first_visit`: an exact HTTPS issuer origin, integer Unix seconds with a
 positive window of at most24hours, and1-4 lowercase SHA256 context fingerprints.
 Invalid configuration rejects startup. Future/expired windows, a different issuer,
 non-remember consent mode and unmatched/missing signed approvals all fall back

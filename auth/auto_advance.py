@@ -24,6 +24,7 @@ class AutoAdvancePolicy:
     started_at: int
     expires_at: int
     contexts: frozenset[str]
+    first_visit: bool = False
 
     @classmethod
     def from_environment(cls):
@@ -32,14 +33,17 @@ class AutoAdvancePolicy:
             return None
         try:
             value = json.loads(raw)
-            if set(value) != {"origin", "started_at", "expires_at", "contexts"}:
+            required = {"origin", "started_at", "expires_at", "contexts"}
+            if set(value) not in (required, required | {"first_visit"}):
                 raise ValueError
             origin = value["origin"]
             parsed = urlsplit(origin)
             start, end = value["started_at"], value["expires_at"]
             contexts = value["contexts"]
+            first_visit = value.get("first_visit", False)
             if (
-                parsed.scheme != "https"
+                type(first_visit) is not bool
+                or parsed.scheme != "https"
                 or not parsed.hostname
                 or parsed.username is not None
                 or parsed.password is not None
@@ -58,7 +62,7 @@ class AutoAdvancePolicy:
             ):
                 raise ValueError
             _ = parsed.port  # Reject malformed authorities too.
-            return cls(origin, start, end, frozenset(contexts))
+            return cls(origin, start, end, frozenset(contexts), first_visit)
         except (TypeError, ValueError, KeyError, AttributeError):
             raise ValueError(
                 f"{CONFIG_ENV} must contain an exact HTTPS origin, 1-4 SHA256 contexts and a <=24h integer epoch window"
@@ -90,8 +94,11 @@ class FiniteAutoAdvanceMixin:
                 and transaction is not None
                 and client is not None
                 and fingerprint in policy.contexts
-                and "workspace-v1:" + fingerprint
-                in self._decode_list_cookie(request, "MCP_APPROVED_CLIENTS")
+                and (
+                    policy.first_visit
+                    or "workspace-v1:" + fingerprint
+                    in self._decode_list_cookie(request, "MCP_APPROVED_CLIENTS")
+                )
             ):
                 txn_id = request.query_params["txn_id"]
                 token = secrets.token_urlsafe(32)

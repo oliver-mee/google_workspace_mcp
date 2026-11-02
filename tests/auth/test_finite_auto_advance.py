@@ -28,7 +28,7 @@ def native(monkeypatch):
     yield from native_fixture.__wrapped__(monkeypatch)
 
 
-def arm(c, p, cid, monkeypatch):
+def arm(c, p, cid, monkeypatch, *, first_visit=False):
     url = start(c, cid)
     req = Request(
         {
@@ -45,9 +45,12 @@ def arm(c, p, cid, monkeypatch):
         "expires_at": int(time.time()) + 3600,
         "contexts": [fingerprint],
     }
+    if first_visit:
+        raw["first_visit"] = True
     monkeypatch.setenv(CONFIG_ENV, json.dumps(raw))
     p._personal_auto_advance = AutoAdvancePolicy.from_environment()
-    assert approve(c, page(c, url)).status_code == 302
+    if not first_visit:
+        assert approve(c, page(c, url)).status_code == 302
     return p._personal_auto_advance
 
 
@@ -182,3 +185,84 @@ def test_environment_policy_loaded_by_real_provider_constructor(monkeypatch):
     )
     assert p._personal_auto_advance.contexts == frozenset({"a" * 64})
     assert not p._personal_auto_advance.active(BASE)
+
+
+@pytest.mark.parametrize("site", ["cross-site", "none", None])
+def test_first_visit_without_any_prior_cookie_keeps_callback_binding(
+    native, monkeypatch, site
+):
+    c, p, google, cid = native
+    arm(c, p, cid, monkeypatch, first_visit=True)
+    c.cookies.clear()
+    automatic = page(c, start(c, cid), site)
+    assert automatic.status_code == 302
+    assert "MCP_APPROVED_CLIENTS" not in c.cookies
+    saved = list(c.cookies.jar)
+    c.cookies.clear()
+    assert callback(c, automatic).status_code == 403
+    google.fetch_token.assert_not_awaited()
+    for cookie in saved:
+        c.cookies.set(
+            cookie.name, cookie.value + "bad", domain=cookie.domain, path=cookie.path
+        )
+    assert callback(c, automatic).status_code == 403
+    c.cookies.clear()
+    for cookie in saved:
+        c.cookies.set(cookie.name, cookie.value, domain=cookie.domain, path=cookie.path)
+    returned = callback(c, automatic)
+    assert returned.status_code == 302
+    code = parse_qs(urlsplit(returned.headers["location"]).query)["code"][0]
+    data = {
+        "grant_type": "authorization_code",
+        "client_id": cid,
+        "code": code,
+        "redirect_uri": REDIRECT,
+        "code_verifier": "wrong",
+    }
+    assert c.post("/token", data=data).status_code in (400, 401)
+    data["code_verifier"] = VERIFIER
+    assert c.post("/token", data=data).status_code == 200
+    assert c.post("/token", data=data).status_code in (400, 401)
+    assert callback(c, automatic).status_code == 400
+    google.fetch_token.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["expired", "future", "wrong-origin", "wrong-context", "always", "changed-scope"],
+)
+def test_first_visit_only_skips_exact_active_context(native, monkeypatch, mode):
+    c, p, google, cid = native
+    policy = arm(c, p, cid, monkeypatch, first_visit=True)
+    if mode == "expired":
+        p._personal_auto_advance = replace(policy, expires_at=int(time.time()) - 1)
+    elif mode == "future":
+        p._personal_auto_advance = replace(policy, started_at=int(time.time()) + 3600)
+    elif mode == "wrong-origin":
+        p._personal_auto_advance = replace(policy, origin="https://other.example.test")
+    elif mode == "wrong-context":
+        p._personal_auto_advance = replace(policy, contexts=frozenset({"a" * 64}))
+    elif mode == "always":
+        p._require_authorization_consent = True
+    c.cookies.clear()
+    url = (
+        start(c, cid, scope="openid extra")
+        if mode == "changed-scope"
+        else start(c, cid)
+    )
+    assert page(c, url).status_code == 200
+    google.fetch_token.assert_not_awaited()
+
+
+@pytest.mark.parametrize("value", ["true", 1, None, [], {}])
+def test_first_visit_setting_rejects_non_boolean(monkeypatch, value):
+    raw = {
+        "origin": BASE,
+        "started_at": 1,
+        "expires_at": 2,
+        "contexts": ["a" * 64],
+        "first_visit": value,
+    }
+    monkeypatch.setenv(CONFIG_ENV, json.dumps(raw))
+    with pytest.raises(ValueError, match=CONFIG_ENV):
+        AutoAdvancePolicy.from_environment()

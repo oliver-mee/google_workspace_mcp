@@ -1,7 +1,7 @@
 # Carried patches on v2.1.2
 
 This integration candidate starts at upstream tag `v2.1.2`
-(`49e5e29bc1202ebf4e7218419cd8ff501de556f3`). Fork release `2.1.2+ome.4` carries the patches below.
+(`49e5e29bc1202ebf4e7218419cd8ff501de556f3`). Personal experimental release `2.1.2+ome.4.auto2` carries the patches below.
 Use upstream names and arguments for overlapping operations; retired dispatcher
 actions have no compatibility aliases. Future upstream submissions must be split
 onto clean upstream branches.
@@ -65,8 +65,9 @@ for the threat model, adapter contract, defaults and client listing checklist.
 
 
 A separately configured finite personal auto-advance experiment is disabled by
-default. It requires an exact operator-pinned context plus signed prior browser
-approval and expires within24hours. It deliberately relaxes initiation consent,
+default. It requires an exact operator-pinned context and expires within24hours. The optional
+`first_visit=true` personal trial skips prior approval; the default remembered-only
+mode still requires signed prior browser approval. It deliberately relaxes initiation consent,
 while retaining callback/token bindings; it is not a current-user-intent proof.
 See [experiment boundary and runtime configuration](personal-auto-advance-experiment.md).
 The staff page uses locally bundled official button/optional operator-logo files;
