@@ -21,6 +21,34 @@ connection page, not a Google-authored login page. It collects no Google passwor
 One short initiation reminder remains near the actions. The restrictive hashed
 stylesheet CSP and all auth protections remain unchanged by this presentation.
 
+## Automatic continuation
+
+`WORKSPACE_MCP_OAUTH_PROXY_AUTO_ADVANCE=true` redirects every valid client
+connection directly to Google, including first visits. No pin, approval cookie or
+trial expiry is involved. It is an explicit deployment setting, **false by default**;
+`true` and `false` are the only accepted values. Personal deployments can enable it
+without changing other deployments. With it off, the normal page/remember policy
+below remains unchanged. Turning it on overrides manual GET approval in `always`
+and `remember` mode; the SDK's unsafe `false`/`external` modes are not enabled.
+
+Automatic continuation issues a new signed per-transaction callback-binding cookie
+before redirect. Native state, PKCE, code/redirect/client checks, downstream client
+authentication and token refresh remain. Missing or changed registered redirects
+are rejected; it does not make invalid clients valid. Google still owns Google
+sign-in/consent. The manual POST approval/denial routes retain CSRF protections.
+
+This deliberately removes our explicit confirmation of initiation for ALL valid
+clients. A forwarded initial URL can also continue automatically; callback binding
+does not prove the initiating downstream account. Downstream session binding still
+matters. No actual ChatGPT forwarded-link exploit has been demonstrated. This is an
+operator choice, not security-equivalent to requiring manual approval.
+
+This replaces the older finite `WORKSPACE_MCP_PERSONAL_AUTO_ADVANCE` JSON experiment.
+Remove that old variable and set the new flag on the intended service only. No
+store/key/scope/client migration is required. To restore the page, set the flag to
+false (or remove it) and recreate that service; retain all sign-ins and stores.
+Restart an already-open consent page after changing policy.
+
 ## Consent policy and threat model
 
 `WORKSPACE_MCP_OAUTH_PROXY_REQUIRE_CONSENT` accepts `always` and `remember`.
@@ -72,11 +100,10 @@ a forwarded callback or completes account linking across different browsers or
 users. ChatGPT's own state/session checks may reject that flow; live adversarial
 ChatGPT behavior has not been tested.
 
-The existing cross-site approval protection therefore remains unchanged.
+With automatic continuation disabled, cross-site approval remains unchanged.
 Cross-site ChatGPT arrivals still show the page, even after remembered approval.
-We have not established enough downstream/browser binding evidence to justify
-an automatic bypass here. This is a conservative proxy policy, not a claim that
-ChatGPT lacks additional protections. Synthetic same-origin remembered-flow
+This default is a conservative proxy policy, not a claim that ChatGPT lacks
+additional protections; an operator may choose automatic continuation as above. Synthetic same-origin remembered-flow
 tests are also not evidence of live ChatGPT silent continuation.
 
 OpenAI documents CIMD public-client and signed-assertion flows, with a transition
@@ -104,8 +131,9 @@ No dependency, OAuth store, signing key, profile or Google scope migration is
 required. Existing issued access/refresh tokens and registrations are unaffected.
 An approval form opened before this adapter was installed must be restarted;
 older remembered decisions require one new explicit approval. Do not delete
-credential stores to accomplish this. No new trust configuration is required for the UI; the separate finite personal
-auto-advance experiment is documented in [its own record](personal-auto-advance-experiment.md).
+credential stores to accomplish this. No new trust configuration is required for the UI. Automatic continuation is a
+separate explicit deployment choice described above; the earlier two-browser lab
+is documented in [its diagnostic record](personal-auto-advance-experiment.md).
 A deployment and live browser/ChatGPT acceptance remain separate release gates.
 
 ## Source metadata and ChatGPT listing checklist

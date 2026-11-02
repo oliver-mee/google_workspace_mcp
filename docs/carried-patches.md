@@ -1,7 +1,7 @@
 # Carried patches on v2.1.2
 
 This integration candidate starts at upstream tag `v2.1.2`
-(`49e5e29bc1202ebf4e7218419cd8ff501de556f3`). Personal experimental release `2.1.2+ome.4.auto2` carries the patches below.
+(`49e5e29bc1202ebf4e7218419cd8ff501de556f3`). Fork release `2.1.2+ome.5` carries the patches below.
 Use upstream names and arguments for overlapping operations; retired dispatcher
 actions have no compatibility aliases. Future upstream submissions must be split
 onto clean upstream branches.
@@ -64,11 +64,11 @@ forms need restarting. See [OAuth approval and listing metadata](oauth-approval.
 for the threat model, adapter contract, defaults and client listing checklist.
 
 
-A separately configured finite personal auto-advance experiment is disabled by
-default. It requires an exact operator-pinned context and expires within24hours. The optional
-`first_visit=true` personal trial skips prior approval; the default remembered-only
-mode still requires signed prior browser approval. It deliberately relaxes initiation consent,
-while retaining callback/token bindings; it is not a current-user-intent proof.
-See [experiment boundary and runtime configuration](personal-auto-advance-experiment.md).
+Automatic continuation is an off-by-default deployment setting:
+`WORKSPACE_MCP_OAUTH_PROXY_AUTO_ADVANCE=true`. It redirects ALL valid clients on
+that deployment directly to Google, without prior approval or an expiry. It
+preserves native callback/token bindings while deliberately removing explicit
+initiation confirmation. The old finite pinned JSON runtime has been removed.
+See [configuration and threat model](oauth-approval.md#automatic-continuation).
 The staff page uses locally bundled official button/optional operator-logo files;
 no protocol-details disclosure or remote assets remain.

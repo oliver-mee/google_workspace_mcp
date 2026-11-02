@@ -1,105 +1,46 @@
-"""Finite, operator-pinned personal experiment; absent config preserves normal UX.
+"""Operator-configured automatic continuation with native callback binding.
 
-Prior browser approval is not proof of current initiation. This deliberately
-relaxes initiation consent, while retaining the native callback/token bindings.
+This removes explicit initiation confirmation, not OAuth protocol validation.
+The setting is off by default; enable it only on the intended deployment.
 """
 
-import json
 import os
-import re
 import secrets
-import time
-from dataclasses import dataclass
-from urllib.parse import urlsplit
 
-from starlette.responses import RedirectResponse
+from mcp.shared.auth import InvalidRedirectUriError
+from starlette.responses import HTMLResponse, RedirectResponse
 
 
-CONFIG_ENV = "WORKSPACE_MCP_PERSONAL_AUTO_ADVANCE"
+CONFIG_ENV = "WORKSPACE_MCP_OAUTH_PROXY_AUTO_ADVANCE"
 
 
-@dataclass(frozen=True)
-class AutoAdvancePolicy:
-    origin: str
-    started_at: int
-    expires_at: int
-    contexts: frozenset[str]
-    first_visit: bool = False
-
-    @classmethod
-    def from_environment(cls):
-        raw = os.getenv(CONFIG_ENV, "").strip()
-        if not raw:
-            return None
-        try:
-            value = json.loads(raw)
-            required = {"origin", "started_at", "expires_at", "contexts"}
-            if set(value) not in (required, required | {"first_visit"}):
-                raise ValueError
-            origin = value["origin"]
-            parsed = urlsplit(origin)
-            start, end = value["started_at"], value["expires_at"]
-            contexts = value["contexts"]
-            first_visit = value.get("first_visit", False)
-            if (
-                type(first_visit) is not bool
-                or parsed.scheme != "https"
-                or not parsed.hostname
-                or parsed.username is not None
-                or parsed.password is not None
-                or parsed.path
-                or parsed.query
-                or parsed.fragment
-                or type(start) is not int
-                or type(end) is not int
-                or not 0 < end - start <= 86400
-                or not isinstance(contexts, list)
-                or not 1 <= len(contexts) <= 4
-                or any(
-                    not isinstance(x, str) or re.fullmatch(r"[0-9a-f]{64}", x) is None
-                    for x in contexts
-                )
-            ):
-                raise ValueError
-            _ = parsed.port  # Reject malformed authorities too.
-            return cls(origin, start, end, frozenset(contexts), first_visit)
-        except (TypeError, ValueError, KeyError, AttributeError):
-            raise ValueError(
-                f"{CONFIG_ENV} must contain an exact HTTPS origin, 1-4 SHA256 contexts and a <=24h integer epoch window"
-            ) from None
-
-    def active(self, issuer):
-        return (
-            self.origin == str(issuer).rstrip("/")
-            and self.started_at <= time.time() < self.expires_at
-        )
+def auto_advance_enabled():
+    raw = os.getenv(CONFIG_ENV, "false").strip().lower()
+    if raw not in {"true", "false"}:
+        raise ValueError(f"{CONFIG_ENV} must be true or false")
+    return raw == "true"
 
 
-class FiniteAutoAdvanceMixin:
+class AutoAdvanceMixin:
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._personal_auto_advance = AutoAdvancePolicy.from_environment()
+        self._auto_advance_enabled = auto_advance_enabled()
 
     async def _handle_consent(self, request):
-        policy = self._personal_auto_advance
         if (
-            policy is not None
-            and policy.active(self.issuer_url)
-            and self._require_authorization_consent == "remember"
+            self._auto_advance_enabled
+            and self._require_authorization_consent in (True, "remember")
             and request.method == "GET"
         ):
-            transaction, client, fingerprint = await self._consent_context(request)
-            if (
-                policy.active(self.issuer_url)
-                and transaction is not None
-                and client is not None
-                and fingerprint in policy.contexts
-                and (
-                    policy.first_visit
-                    or "workspace-v1:" + fingerprint
-                    in self._decode_list_cookie(request, "MCP_APPROVED_CLIENTS")
-                )
-            ):
+            transaction, client, _ = await self._consent_context(request)
+            if transaction is not None and client is not None:
+                # Recheck resolved metadata rather than trusting a stale client record.
+                try:
+                    client.validate_redirect_uri(transaction.client_redirect_uri)
+                except InvalidRedirectUriError:
+                    return HTMLResponse(
+                        "Connection changed. Start again.", status_code=400
+                    )
                 txn_id = request.query_params["txn_id"]
                 token = secrets.token_urlsafe(32)
                 transaction.consent_token = token
